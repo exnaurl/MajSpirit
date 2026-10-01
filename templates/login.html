@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>雀灵麻将 · 登录</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="card">
+    <h1>雀灵麻将</h1>
+    <p class="subtitle">M A J S P I R I T</p>
+
+    <form id="loginForm">
+      <div class="form-group">
+        <label for="username">用户名</label>
+        <input type="text" id="username" name="username"
+               placeholder="请输入用户名" autocomplete="username" required>
+      </div>
+
+      <div class="form-group">
+        <label for="password">密码</label>
+        <input type="password" id="password" name="password"
+               placeholder="请输入密码" autocomplete="current-password" required>
+      </div>
+
+      <button type="submit" class="btn">登 录</button>
+      <div class="message" id="message"></div>
+    </form>
+
+    <p class="switch">
+      还没有账号？<a href="/register">立即注册</a>
+    </p>
+  </div>
+
+  <script>
+    const form = document.getElementById('loginForm');
+    const msg = document.getElementById('message');
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      msg.textContent = '';
+      msg.className = 'message';
+
+      const username = document.getElementById('username').value.trim();
+      const password = document.getElementById('password').value;
+
+      try {
+        const res = await fetch('/api/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password })
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+          msg.textContent = data.error || '登录失败';
+          msg.classList.add('error');
+          return;
+        }
+
+        // 保存 token，跳转
+        localStorage.setItem('token', data.token);
+        msg.textContent = '登录成功，正在进入...';
+        msg.classList.add('success');
+        setTimeout(() => location.href = '/home', 600);
+      } catch (err) {
+        msg.textContent = '网络错误，请稍后重试';
+        msg.classList.add('error');
+      }
+    });
+  </script>
+</body>
+</html>

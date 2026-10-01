@@ -1,0 +1,209 @@
+/* ========== 全局 ========== */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+:root {
+  --table-dark: #0d3b2e;
+  --table-darker: #08251c;
+  --tile-bg: #f7f3e8;
+  --tile-bg-hover: #fffdf5;
+  --gold: #c9a227;
+  --gold-light: #e6c85a;
+  --ink: #1a2e28;
+  --ink-soft: #4a5f57;
+  --red: #c0392b;
+  --shadow: rgba(0, 0, 0, 0.35);
+}
+
+html, body {
+  height: 100%;
+}
+
+body {
+  font-family: "Songti SC", "Source Han Serif SC", "Noto Serif SC", "STSong", serif;
+  background: radial-gradient(circle at 50% 30%, var(--table-dark) 0%, var(--table-darker) 70%, #04160f 100%);
+  color: var(--tile-bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 20px;
+  position: relative;
+  overflow: hidden;
+}
+
+/* 桌面纹理：细密的斜线，模拟绒布 */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background-image:
+    repeating-linear-gradient(45deg, rgba(255,255,255,0.015) 0 2px, transparent 2px 6px),
+    repeating-linear-gradient(-45deg, rgba(0,0,0,0.03) 0 2px, transparent 2px 6px);
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* ========== 卡片（牌面） ========== */
+.card {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 420px;
+  background: linear-gradient(180deg, var(--tile-bg) 0%, #efe9d8 100%);
+  border-radius: 10px;
+  border: 2px solid var(--gold);
+  box-shadow:
+    0 0 0 1px rgba(0,0,0,0.3),
+    0 10px 30px var(--shadow),
+    inset 0 1px 0 rgba(255,255,255,0.8),
+    inset 0 -3px 8px rgba(0,0,0,0.08);
+  padding: 36px 32px 28px;
+  color: var(--ink);
+}
+
+/* 牌面顶部金色装饰线 */
+.card::before {
+  content: "";
+  position: absolute;
+  top: 10px;
+  left: 16px;
+  right: 16px;
+  height: 3px;
+  background: linear-gradient(90deg, transparent, var(--gold), transparent);
+  border-radius: 2px;
+  opacity: 0.7;
+}
+
+/* ========== 标题 ========== */
+.card h1 {
+  font-size: 28px;
+  text-align: center;
+  letter-spacing: 8px;
+  color: var(--ink);
+  margin-bottom: 4px;
+  text-indent: 8px; /* 抵消 letter-spacing 造成的偏移 */
+}
+
+.card .subtitle {
+  text-align: center;
+  font-size: 13px;
+  color: var(--ink-soft);
+  letter-spacing: 3px;
+  margin-bottom: 28px;
+}
+
+/* ========== 表单 ========== */
+.form-group {
+  margin-bottom: 18px;
+}
+
+.form-group label {
+  display: block;
+  font-size: 13px;
+  color: var(--ink-soft);
+  margin-bottom: 6px;
+  letter-spacing: 2px;
+}
+
+.form-group input {
+  width: 100%;
+  padding: 11px 14px;
+  font-size: 15px;
+  font-family: inherit;
+  color: var(--ink);
+  background: var(--tile-bg-hover);
+  border: 1.5px solid #d8cfb8;
+  border-radius: 6px;
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s;
+  box-shadow: inset 0 1px 3px rgba(0,0,0,0.06);
+}
+
+.form-group input:focus {
+  border-color: var(--gold);
+  box-shadow:
+    0 0 0 3px rgba(201, 162, 39, 0.18),
+    inset 0 1px 3px rgba(0,0,0,0.06);
+}
+
+.form-group input::placeholder {
+  color: #b3a98f;
+}
+
+/* ========== 按钮 ========== */
+.btn {
+  width: 100%;
+  padding: 12px;
+  font-size: 16px;
+  font-family: inherit;
+  letter-spacing: 6px;
+  text-indent: 6px;
+  color: #fff;
+  background: linear-gradient(180deg, #1e5c46 0%, #0d3b2e 100%);
+  border: 1.5px solid var(--gold);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: transform 0.1s, box-shadow 0.2s, background 0.2s;
+  box-shadow: 0 3px 0 #062018, 0 4px 10px rgba(0,0,0,0.3);
+  margin-top: 8px;
+}
+
+.btn:hover {
+  background: linear-gradient(180deg, #24705a 0%, #114a3a 100%);
+}
+
+.btn:active {
+  transform: translateY(2px);
+  box-shadow: 0 1px 0 #062018, 0 2px 6px rgba(0,0,0,0.3);
+}
+
+/* ========== 底部切换链接 ========== */
+.switch {
+  text-align: center;
+  margin-top: 20px;
+  font-size: 13px;
+  color: var(--ink-soft);
+  letter-spacing: 1px;
+}
+
+.switch a {
+  color: var(--red);
+  text-decoration: none;
+  border-bottom: 1px dashed var(--red);
+  padding-bottom: 1px;
+  margin-left: 4px;
+}
+
+.switch a:hover {
+  color: #e04b3a;
+  border-bottom-style: solid;
+}
+
+/* ========== 提示消息 ========== */
+.message {
+  min-height: 20px;
+  text-align: center;
+  font-size: 13px;
+  margin-top: 12px;
+  letter-spacing: 1px;
+}
+
+.message.error { color: var(--red); }
+.message.success { color: #1e7a4f; }
+
+/* ========== 装饰：角落牌纹 ========== */
+.card::after {
+  content: "BingYan Studio";
+  position: absolute;
+  right: 14px;
+  bottom: 10px;
+  font-size: 11px;
+  color: rgba(201, 162, 39, 0.45);
+  letter-spacing: 2px;
+  writing-mode: vertical-rl;
+  pointer-events: none;
+}
