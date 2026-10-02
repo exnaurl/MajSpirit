@@ -3,12 +3,14 @@ package handler
 import (
 	"time"
 
-	"MajSpirit/config"
-
 	"github.com/golang-jwt/jwt/v5"
 )
 
-var jwtSecret = []byte(config.Load().SessionSecret)
+var jwtSecret []byte
+
+func InitJWT(secret string) {
+	jwtSecret = []byte(secret)
+}
 
 type Claims struct {
 	UserID uint `json:"user_id"`

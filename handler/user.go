@@ -10,7 +10,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-var req struct {
+type Request struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
 }
@@ -27,6 +27,8 @@ func IndexHandler(c echo.Context) error {
 }
 
 func RegisterHandler(c echo.Context) error {
+	var req Request
+
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, echo.Map{"error": "参数错误"})
 	}
@@ -57,6 +59,8 @@ func RegisterHandler(c echo.Context) error {
 }
 
 func LoginHandler(c echo.Context) error {
+	var req Request
+
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, echo.Map{"error": "参数错误"})
 	}
@@ -73,8 +77,47 @@ func LoginHandler(c echo.Context) error {
 
 	token, _ := GenerateToken(user.ID)
 
+	c.SetCookie(&http.Cookie{
+		Name:     "token",
+		Value:    token,
+		Path:     "/",
+		MaxAge:   86400,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
+
 	return c.JSON(http.StatusOK, echo.Map{
 		"user":  user,
 		"token": token,
 	})
+}
+
+func PersonalHandler(c echo.Context) error {
+	userID := c.Get("userID").(uint)
+
+	if userID == 0 {
+		return c.JSON(http.StatusUnauthorized, echo.Map{"error": "请先登录"})
+	}
+
+	var user model.User
+	err := storage.DB.Where("id = ?", userID).First(&user).Error
+
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "获取用户信息失败"})
+	}
+
+	return c.JSON(http.StatusOK, user)
+}
+
+func LogoutHandler(c echo.Context) error {
+	c.SetCookie(&http.Cookie{
+		Name:     "token",
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
+
+	return c.JSON(http.StatusOK, echo.Map{"message": "退出登录成功"})
 }

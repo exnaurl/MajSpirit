@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>雀灵麻将 - 大厅</title>
+  <link rel="stylesheet" href="/static/home.css">
+</head>
+<body>
+  <div class="app">
+    <!-- 顶部导航 -->
+    <header class="navbar">
+      <div class="logo">雀灵麻将 <span class="sub">MajSpirit</span></div>
+      <nav class="nav-actions">
+        <button class="btn" onclick="openProfile()">个人资料</button>
+        <button class="btn" onclick="openSettings()">设置</button>
+        <button class="btn primary" onclick="openGame()">开始游戏</button>
+        <button class="btn" onclick="openHistory()">历史记录</button>
+      </nav>
+    </header>
+
+    <!-- 主区域 -->
+    <main class="main">
+      <div class="welcome">
+        <h1>欢迎回来，<span id="username">玩家</span></h1>
+        <p class="hint">点击「开始游戏」进入匹配队列</p>
+      </div>
+
+      <!-- 游戏状态区 -->
+      <div id="gamePanel" class="game-panel hidden">
+        <h2>对局信息</h2>
+        <pre id="gameInfo"></pre>
+      </div>
+
+      <!-- 房间面板：必须放在 #modalMask 之外，否则遮罩隐藏时会跟着消失 -->
+      <div id="gameRoom" class="game-panel hidden">
+        <div class="room-code">
+          房间号：<b id="roomCode">----</b>
+          <button class="btn mini" onclick="copyRoomCode()">复制</button>
+        </div>
+        <div class="room-players">
+          <h4>玩家（<span id="playerCount">1</span>/4）</h4>
+          <ul id="playerList"></ul>
+        </div>
+        <p id="roomStatus" class="room-status">等待其他玩家加入...</p>
+        <button class="btn danger full" onclick="leaveRoom()">退出房间</button>
+      </div>
+    </main>
+  </div>
+
+  <!-- 通用弹窗遮罩 -->
+  <div id="modalMask" class="modal-mask hidden" onclick="closeModal(event)">
+    <!-- 个人资料 -->
+    <div id="profileModal" class="modal hidden">
+      <div class="modal-header">
+        <h3>个人资料</h3>
+        <button class="close" onclick="closeModal()">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="profile-row"><span>用户名</span><b id="pUsername">-</b></div>
+        <div class="profile-row"><span>用户 ID</span><b id="pId">-</b></div>
+        <div class="profile-row"><span>积分</span><b id="pPoint">-</b></div>
+        <div class="profile-row"><span>注册时间</span><b id="pCreated">-</b></div>
+      </div>
+    </div>
+
+    <!-- 设置 -->
+    <div id="settingsModal" class="modal hidden">
+      <div class="modal-header">
+        <h3>设置</h3>
+        <button class="close" onclick="closeModal()">×</button>
+      </div>
+      <div class="modal-body">
+        <button class="btn danger full" onclick="logout()">退出登录</button>
+      </div>
+    </div>
+
+    <!-- 历史记录 -->
+    <div id="historyModal" class="modal hidden">
+      <div class="modal-header">
+        <h3>历史记录</h3>
+        <button class="close" onclick="closeModal()">×</button>
+      </div>
+      <div class="modal-body">
+        <div id="historyList" class="history-list">
+          <p class="empty">加载中...</p>
+        </div>
+      </div>
+    </div>
+
+    <div id="gameModal" class="modal hidden">
+      <div class="modal-header">
+        <h3>开始游戏</h3>
+        <button class="close" onclick="closeModal()">×</button>
+      </div>
+      <div class="modal-body">
+        <button class="btn primary" onclick="makeRoom()">创建房间</button>
+        <button class="btn" onclick="joinRoom()">加入房间</button>
+      </div>
+    </div>
+
+    <div id="joinModal" class="modal hidden">
+      <div class="modal-header">
+        <h3>加入房间</h3>
+        <button class="close" onclick="closeModal()">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="join-row">
+          <input type="text" id="roomIdInput" placeholder="请输入房间号" maxlength="4"
+                 inputmode="numeric" autocomplete="off" onkeydown="if(event.key==='Enter')confirmJoinRoom()">
+          <button id="joinBtn" class="btn primary" onclick="confirmJoinRoom()">加入</button>
+        </div>
+        <p id="joinError" class="room-status hidden"></p>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/home.js"></script>
+</body>
+</html>

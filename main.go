@@ -13,6 +13,8 @@ import (
 	"github.com/labstack/echo/v4/middleware"
 )
 
+var jwtSecret = []byte(config.Load().SessionSecret)
+
 type TemplateRenderer struct {
 	templates *template.Template
 }
@@ -23,6 +25,7 @@ func (t *TemplateRenderer) Render(w io.Writer, name string, data interface{}, c 
 
 func main() {
 	cfg := config.Load()
+	handler.InitJWT(cfg.SessionSecret)
 
 	if err := storage.InitDB(cfg); err != nil {
 		panic(err)
@@ -44,7 +47,14 @@ func main() {
 		return c.Render(http.StatusOK, "login.html", nil)
 	})
 
+	e.GET("/home", func(c echo.Context) error {
+		userID := c.Get("userID").(uint)
+		return c.Render(http.StatusOK, "home.html", map[string]uint{"userID": userID})
+	}, handler.JTWMiddleware)
+
+	e.GET("/api/me", handler.PersonalHandler, handler.JTWMiddleware)
 	e.POST("/api/register", handler.RegisterHandler)
 	e.POST("/api/login", handler.LoginHandler)
+	e.POST("/api/logout", handler.LogoutHandler, handler.JTWMiddleware)
 	e.Logger.Fatal(e.Start(":" + cfg.ServerPort))
 }
