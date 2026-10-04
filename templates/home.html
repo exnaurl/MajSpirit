@@ -41,6 +41,11 @@
           <h4>玩家（<span id="playerCount">1</span>/4）</h4>
           <ul id="playerList"></ul>
         </div>
+        <!-- 游戏规则：房主可改（只保存在本地，暂不传后端），其他人只读 -->
+        <div class="room-players">
+          <h4>游戏规则(暂未实现)</h4>
+          <ul id="ruleList"></ul>
+        </div>
         <p id="roomStatus" class="room-status">等待其他玩家加入...</p>
         <button class="btn danger full" onclick="leaveRoom()">退出房间</button>
       </div>

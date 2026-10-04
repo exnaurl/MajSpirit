@@ -50,11 +50,19 @@ func main() {
 	e.GET("/home", func(c echo.Context) error {
 		userID := c.Get("userID").(uint)
 		return c.Render(http.StatusOK, "home.html", map[string]uint{"userID": userID})
-	}, handler.JTWMiddleware)
+	}, handler.JWTMiddleware)
 
-	e.GET("/api/me", handler.PersonalHandler, handler.JTWMiddleware)
+	e.GET("/api/me", handler.PersonalHandler, handler.JWTAPIMiddleware)
 	e.POST("/api/register", handler.RegisterHandler)
 	e.POST("/api/login", handler.LoginHandler)
-	e.POST("/api/logout", handler.LogoutHandler, handler.JTWMiddleware)
+	e.POST("/api/logout", handler.LogoutHandler, handler.JWTAPIMiddleware)
+	e.POST("/api/room/create", handler.CreateRoomHandler, handler.JWTAPIMiddleware)
+	e.POST("/api/room/join", handler.JoinRoomHandler, handler.JWTAPIMiddleware)
+	e.GET("/api/room/:id", handler.GetRoomHandler, handler.JWTAPIMiddleware)
+	e.POST("/api/room/leave", handler.LeaveRoomHandler, handler.JWTAPIMiddleware)
+	e.POST("/api/game/start", handler.StartGameHandler, handler.JWTAPIMiddleware)
+	e.GET("/api/game/:id", handler.GetGameHandler, handler.JWTAPIMiddleware)
+	e.GET("/ws/room/:id", handler.RoomWSHandler, handler.JWTAPIMiddleware)
+	e.GET("/ws/game/:id", handler.GameWSHandler, handler.JWTAPIMiddleware)
 	e.Logger.Fatal(e.Start(":" + cfg.ServerPort))
 }
