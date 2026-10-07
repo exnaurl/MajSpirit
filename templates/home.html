@@ -49,6 +49,39 @@
         <p id="roomStatus" class="room-status">等待其他玩家加入...</p>
         <button class="btn danger full" onclick="leaveRoom()">退出房间</button>
       </div>
+
+      <!-- 牌桌：对局阶段（手牌只有本人收到，来自 /ws/game/<gameID> 的 turn_options） -->
+      <section id="gameTable" class="table-panel hidden">
+        <div class="table-grid">
+          <div class="seat-box" id="seatTop"></div>
+          <div class="seat-box" id="seatLeft"></div>
+
+          <div class="table-center">
+            <!-- 局数/本场/牌山/宝牌：按习惯放桌子中间 -->
+            <div class="table-info">
+              <span id="tableRound" class="chip">-</span>
+              <span id="tableTurn" class="chip">-</span>
+              <span id="tableRest" class="chip">-</span>
+              <span class="chip dora-chip">宝牌<span id="tableDora" class="tile-row dora-row"></span></span>
+            </div>
+            <div id="tableLog" class="table-log">等待出牌...</div>
+            <div id="tableResult" class="table-result hidden"></div>
+          </div>
+
+          <div class="seat-box" id="seatRight"></div>
+          <div class="seat-box self" id="seatSelf"></div>
+        </div>
+
+        <div class="my-hand-area">
+          <div class="hand-label">我的手牌<span id="handCount" class="muted"></span></div>
+          <div id="tableMelds" class="tile-row melds"></div>
+          <div id="tableHand" class="tile-row hand"></div>
+          <div id="tenpaiHint" class="tenpai-hint"></div>
+        </div>
+
+        <div id="tableActions" class="table-actions"></div>
+        <p id="tableStatus" class="table-status"></p>
+      </section>
     </main>
   </div>
 
@@ -98,6 +131,16 @@
         <button class="close" onclick="closeModal()">×</button>
       </div>
       <div class="modal-body">
+        <div class="bot-row">
+          <label for="botCount">人机数量</label>
+          <select id="botCount" class="rule-select">
+            <option value="0" selected>0（全是真人）</option>
+            <option value="1">1 个机器人</option>
+            <option value="2">2 个机器人</option>
+            <option value="3">3 个机器人</option>
+          </select>
+          <span class="table-hint">机器人不吃碰杠，会自己立直/暗杠/和牌</span>
+        </div>
         <button class="btn primary" onclick="makeRoom()">创建房间</button>
         <button class="btn" onclick="joinRoom()">加入房间</button>
       </div>

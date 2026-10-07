@@ -197,6 +197,19 @@ body {
 
 .modal-body { padding: 22px; overflow-y: auto; }
 
+/* 创建房间：人机数量 */
+.bot-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+.bot-row label { font-size: 13px; color: var(--text-dim); }
+.bot-row .table-hint { font-size: 12px; }
+select.rule-select {
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, .05);
+  color: var(--text);
+  font-size: 13px;
+}
+
 /* 个人资料行 */
 .profile-row {
   display: flex;
@@ -334,4 +347,241 @@ body {
   color: var(--text-dim);
   font-size: 13px;
   margin: 14px 0;
+}
+
+/* ============ 牌桌（对局阶段） ============ */
+.table-panel {
+  padding: 18px 20px 22px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background:
+    radial-gradient(120% 90% at 50% 0%, rgba(47, 191, 113, .12), transparent 55%),
+    linear-gradient(160deg, #16222c, #101a22 60%);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, .38);
+}
+
+.table-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .04);
+  color: var(--text);
+  font-size: 13px;
+}
+.dora-chip { color: var(--gold); border-color: rgba(217, 164, 65, .35); }
+.dora-row { display: inline-flex; gap: 3px; }
+
+/* 四家围一桌：上面是对家、左边上家、右边下家，自己在最下面 */
+.table-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr) minmax(0, 1fr);
+  grid-template-areas:
+    ". top ."
+    "left center right"
+    "self self self";
+  gap: 10px;
+  align-items: stretch;
+}
+#seatTop { grid-area: top; }
+#seatLeft { grid-area: left; }
+#seatRight { grid-area: right; }
+#seatSelf { grid-area: self; }
+.table-center { grid-area: center; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 10px; }
+
+.seat-box {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, .03);
+  min-height: 64px;
+  min-width: 0;            /* 关键：允许收缩，别把牌背顶出面板 */
+  overflow: hidden;
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+.seat-box.active {
+  border-color: rgba(47, 191, 113, .75);
+  box-shadow: 0 0 0 1px rgba(47, 191, 113, .35), 0 0 18px rgba(47, 191, 113, .18);
+}
+.seat-box.self { background: rgba(255, 255, 255, .05); }
+.seat-box.empty { opacity: .45; }
+
+.seat-name { display: flex; align-items: center; gap: 6px; font-size: 13px; margin-bottom: 6px; min-width: 0; }
+.seat-name > span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wind {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: linear-gradient(140deg, #2fbf71, #1d8f53);
+  color: #05210f;
+  font-size: 12px;
+  font-weight: 800;
+}
+.seat-name .dealer { color: var(--gold); font-size: 11px; }
+.seat-name .riichi-tag {
+  margin-left: auto;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: rgba(229, 83, 75, .16);
+  color: #ff8f88;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.seat-name .me { color: var(--text-dim); font-size: 11px; }
+
+.seat-backs { display: flex; flex-wrap: wrap; gap: 2px; margin-bottom: 6px; }
+.seat-melds { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+.seat-melds .meld-group { display: flex; gap: 1px; padding: 2px; border-radius: 6px; background: rgba(0, 0, 0, .22); }
+.seat-discards { display: flex; flex-wrap: wrap; gap: 2px; }
+
+/* 当前行动的玩家：更明显的框 + 「手番」角标 */
+.seat-box.active {
+  border-color: rgba(47, 191, 113, .9);
+  background: rgba(47, 191, 113, .09);
+  box-shadow: 0 0 0 2px rgba(47, 191, 113, .35), 0 0 22px rgba(47, 191, 113, .25);
+}
+.turn-badge {
+  margin-left: auto;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: linear-gradient(140deg, #2fbf71, #1d8f53);
+  color: #05210f;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+/* 刚摸到的那张和手牌之间留一道缝 */
+.drawn-gap { display: inline-block; width: 14px; }
+
+.table-log {
+  padding: 10px 16px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, .28);
+  color: var(--text-dim);
+  font-size: 13px;
+  text-align: center;
+  min-width: 60%;
+}
+.table-result {
+  padding: 12px 18px;
+  border-radius: 12px;
+  border: 1px solid rgba(217, 164, 65, .45);
+  background: rgba(217, 164, 65, .12);
+  color: #f4d79a;
+  font-size: 14px;
+  text-align: center;
+  line-height: 1.6;
+  max-width: 100%;
+}
+.result-title { font-size: 16px; font-weight: 700; color: #ffd98a; margin-bottom: 4px; }
+.result-line { font-size: 13px; color: #e7cfa0; }
+
+/* 牌：直接用素材图 */
+.tile { display: inline-block; border: 0; background: none; padding: 0; }
+img.tile { width: 40px; height: auto; user-select: none; -webkit-user-drag: none; }
+img.tile.mini { width: 22px; }
+img.tile.small { width: 30px; }
+img.tile.back { width: 22px; opacity: .95; }
+img.tile.drawn {
+  filter: drop-shadow(0 0 6px rgba(47, 191, 113, .9));
+  transform: translateY(-4px);
+}
+img.tile.clickable { cursor: pointer; transition: transform .1s ease, filter .1s ease; }
+img.tile.clickable:hover { transform: translateY(-6px); filter: drop-shadow(0 6px 10px rgba(0, 0, 0, .5)); }
+img.tile.armed { filter: drop-shadow(0 0 6px rgba(217, 164, 65, .95)); }
+img.tile.dim { opacity: .55; }
+
+.tile-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 3px; }
+.tile-row.hand { gap: 4px; min-height: 58px; }
+.tile-row.melds { min-height: 44px; }
+.meld-group {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  padding: 3px 6px;
+  margin-right: 6px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, .05);
+}
+.meld-label { color: var(--text-dim); font-size: 11px; margin-left: 2px; align-self: center; }
+
+.my-hand-area {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(0, 0, 0, .18);
+}
+.hand-label { color: var(--text-dim); font-size: 12px; margin-bottom: 8px; }
+.hand-label .muted { margin-left: 8px; opacity: .7; }
+
+.table-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; justify-content: center; align-items: center; }
+.table-actions .btn { min-width: 84px; }
+.table-actions .btn.armed { border-color: var(--gold); color: var(--gold); }
+/* 已立直：宣言之后不可撤销，所以这里只是标记，不是按钮 */
+.riichi-chip { color: var(--gold); border-color: rgba(217, 164, 65, .5); background: rgba(217, 164, 65, .12); }
+.table-hint { color: var(--text-dim); font-size: 13px; }
+
+.table-status { text-align: center; color: var(--text-dim); font-size: 13px; margin: 12px 0 0; }
+
+/* 听牌提示：常驻显示在手牌区域右侧（悬停时临时替换成"打这张听什么"） */
+.my-hand-area { position: relative; }
+.tenpai-hint {
+  position: absolute;
+  right: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  max-width: 42%;
+  text-align: right;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-dim);
+  pointer-events: none;
+}
+
+/* 悬停某张牌时，场上同牌高亮：牌河蓝、手牌/副露金、赤5 再加红框 */
+img.tile.hl-same {
+  box-shadow: 0 0 0 2px rgba(217, 164, 65, .95), 0 0 12px rgba(217, 164, 65, .55);
+  border-radius: 4px;
+}
+img.tile.hl-river {
+  box-shadow: 0 0 0 2px rgba(76, 156, 255, .95), 0 0 12px rgba(76, 156, 255, .55);
+  border-radius: 4px;
+}
+img.tile.hl-red {
+  outline: 2px solid #ff5a5a;
+  outline-offset: 1px;
+  border-radius: 4px;
+}
+
+/* 结算里的收支/总分 */
+.money { display: inline-block; margin: 0 6px; font-variant-numeric: tabular-nums; }
+.money.up { color: #5fd39a; }
+.money.down { color: #ff8f88; }
+.money-line { margin-top: 6px; }
+.total-line { color: var(--text-dim); font-size: 12px; }
+
+/* 窄屏：对家和中央各占一行，左右两家并排 */
+@media (max-width: 860px) {
+  .main { padding: 24px 14px; }
+  .table-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-areas:
+      "top top"
+      "left right"
+      "center center"
+      "self self";
+  }
+  img.tile { width: 30px; }
+  img.tile.mini { width: 18px; }
+  img.tile.small { width: 24px; }
+  img.tile.back { width: 18px; }
+  .tile-row.hand { justify-content: center; }
 }

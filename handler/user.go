@@ -2,6 +2,8 @@ package handler
 
 import (
 	"net/http"
+	"strings"
+	"unicode"
 
 	"MajSpirit/model"
 	"MajSpirit/storage"
@@ -33,13 +35,35 @@ func RegisterHandler(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, echo.Map{"error": "参数错误"})
 	}
 
+	// 公网暴露前必须校验：以前空用户名 + 空密码也能注册成功
+	req.Username = strings.TrimSpace(req.Username)
+
+	if n := len([]rune(req.Username)); n < 2 || n > 25 {
+		return c.JSON(http.StatusBadRequest, echo.Map{"error": "用户名长度需要 2-25 个字符"})
+	}
+
+	for _, r := range req.Username {
+		if !(r == '_' || r == '-' || unicode.IsLetter(r) || unicode.IsDigit(r)) {
+			return c.JSON(http.StatusBadRequest, echo.Map{"error": "用户名只能包含字母、数字、下划线、连字符（中文也可以）"})
+		}
+	}
+
+	if n := len(req.Password); n < 6 || n > 72 {
+		// bcrypt 只取前 72 字节，超长直接拒掉，免得出现"两个密码都能登"
+		return c.JSON(http.StatusBadRequest, echo.Map{"error": "密码长度需要 6-72 个字符"})
+	}
+
 	var existing model.User
 
 	if err := storage.DB.Where("username = ?", req.Username).First(&existing).Error; err == nil {
 		return c.JSON(http.StatusConflict, echo.Map{"error": "用户名已存在"})
 	}
 
-	hashed, _ := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	hashed, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "密码处理失败"})
+	}
 
 	user := model.User{
 		Username: req.Username,

@@ -172,6 +172,14 @@ const roomState = {
   started: false,       // 对局已开始
   startRequested: false, // 本标签页是否已发过开局请求
   fullSince: 0,         // 满员的起始时间，用于等待后端自行开局
+  mySeat: null,          // 我的座位（服务端下发）
+  hand: [],              // 我的手牌（门内，只有本人拿得到）
+  melds: [],             // 我的副露，每组 3 张
+  options: null,         // 当前可选动作（turn_options）
+  claim: null,           // 鸣牌窗口：别人打出的牌，我可以碰/吃/杠/荣和/过
+  table: null,           // 最近一份公开对局快照
+  finished: false,       // 本局是否已结束（和了/流局）
+  riichiArmed: false,    // 已按下立直，等待点一张宣言牌
 };
 
 let currentUser = null; // 当前身份，init()/ensureSelf() 填充
@@ -420,7 +428,12 @@ function openGame() {
 async function makeRoom() {
   if (roomState.roomId) return;
   try {
-    const data = USE_MOCK ? await mockCreateRoom() : await apiPost(ROOM_API.create);
+    // 人机数量：创建房间时带上 bots，由后端补机器人座位
+    const botEl = document.getElementById('botCount');
+    const bots = botEl ? Number(botEl.value) || 0 : 0;
+    const url = bots > 0 ? `${ROOM_API.create}?bots=${bots}` : ROOM_API.create;
+
+    const data = USE_MOCK ? await mockCreateRoom() : await apiPost(url);
     enterRoom(data);
   } catch (err) {
     alert('创建房间失败：' + err.message);
@@ -703,8 +716,14 @@ function applyGameData(data, fromPoll) {
   roomState.starting = false;
   if (Array.isArray(data.players) && data.players.length) roomState.players = data.players;
   if (data.game_rule) roomState.gameRule = parseRule(data.game_rule);
+  roomState.table = data;                     // 公开快照：牌河/宝牌/立直/谁在打
+  if (data.finished) roomState.finished = true;
+  // 轮询兜底时，接口会把本人的手牌/可选动作一起带回来（字段与 WS 一致）
+  if (data.you) applyHand(data.you);
+  if (data.options) applyTurnOptions(data.options);
 
   renderRoom();
+  renderTable();
   showGameInfo(data);
   document.getElementById('roomStatus').textContent = '对局已开始！';
   rememberPlace();
@@ -792,9 +811,601 @@ async function beginGame() {
   }
 }
 
+// 调试面板：默认隐藏（想看原始数据时把下面的 add 去掉即可）
 function showGameInfo(data) {
-  document.getElementById('gamePanel').classList.remove('hidden');
-  document.getElementById('gameInfo').textContent = JSON.stringify(data, null, 2);
+  const panel = document.getElementById('gamePanel');
+  const info = document.getElementById('gameInfo');
+
+  if (info) info.textContent = JSON.stringify(data, null, 2);
+  if (panel) panel.classList.add('hidden');
+}
+
+// ---------- 牌桌：手牌渲染 + 操作发送 ----------
+// 手牌/可选动作由服务端通过 turn_options 只发给本人（/ws/game/<gameID>）；
+// 前端只负责渲染，点了什么就原样发回去，后端会重新校验。
+// 前端 -> 服务端：{"type":"action","action":"discard|riichi|kan|tsumo|ryuukyoku","tile":12}
+
+const NUMBER_TEXT = ['', '一', '二', '三', '四', '五', '六', '七', '八', '九'];
+
+const YAKU_TEXT = {
+  riichi: '立直', daburu_riichi: '双立直', ippatsu: '一发', menzenchin_tsumohou: '门清自摸',
+  tanyao: '断幺九', pinfu: '平和', ippeikou: '一杯口', ryanpeikou: '两杯口', chiitoitsu: '七对子',
+  toitoi: '对对和', sanankou: '三暗刻', sankantsu: '三杠子', sanshoku_doujun: '三色同顺',
+  sanshoku_doukou: '三色同刻', ittsuu: '一气通贯', honitsu: '混一色', chinitsu: '清一色',
+  honroutou: '混老头', honloutou: '混老头', honchantaiyaochuu: '混全带幺九',
+  junchantaiyaochuu: '纯全带幺九', shousangen: '小三元', shousuushii: '小四喜',
+  yakuhai_bakaze: '场风牌', yakuhai_jikaze: '自风牌', yakuhai_haku: '白', yakuhai_hatsu: '发',
+  yakuhai_chun: '中', rinshan: '岭上开花', chankan: '抢杠', haitei: '海底摸月', houtei: '河底捞鱼',
+  dora: '宝牌', inner_dora: '里宝牌', red_dora: '赤宝牌',
+  daisangen: '大三元', daisuushii: '大四喜', tsuuiisou: '字一色', ryuuiisou: '绿一色',
+  chinroutou: '清老头', suuankou: '四暗刻', suuankou_tanki: '四暗刻单骑', suukantsu: '四杠子',
+  chuuren: '九莲宝灯', chuuren_poutou: '纯正九莲宝灯', kokushi_musou: '国士无双',
+  kokushi_musou_juusanmen: '国士无双十三面', tenhou: '天和', chiihou: '地和', yakuman: '役满',
+};
+
+// 后端牌值 -> 素材图：static/tiles/
+//   1-9 万 / 11-19 条(s) / 21-29 筒(p) / 31-37 字(1z..7z，东=1z)；x0 = 赤5 -> 0{m,s,p}.png
+//   副露标记 1xx 碰 / 2xx 杠 / 3xx 吃（取低两位再解析）
+const TILE_BASE = '/static/tiles/';
+const SUIT_TEXT = { m: '万', s: '条', p: '筒' };
+const HONOR_TEXT = { 31: '东', 32: '南', 33: '西', 34: '北', 35: '白', 36: '发', 37: '中' };
+
+// 每个座位的牌背颜色（东=蓝、南=绿、西=红、北=黄）
+const SEAT_BACK = ['blue', 'green', 'red', 'yellow'];
+
+function tileInfo(value) {
+  const raw = Math.abs(Number(value) || 0);
+  const base = raw > 100 ? raw % 100 : raw; // 去掉副露标记
+  const red = base > 0 && base % 10 === 0; // x0 = 赤5
+  const t = red ? base - 5 : base;
+
+  if (t >= 31 && t <= 37) {
+    return { file: (t - 30) + 'z.png', text: HONOR_TEXT[t] || '?', red: false };
+  }
+
+  const suit = t <= 9 ? 'm' : t <= 19 ? 's' : 'p';
+  const num = t <= 9 ? t : t <= 19 ? t - 10 : t - 20;
+
+  if (num < 1 || num > 9) return { file: 'back.png', text: '?', red: false };
+
+  return { file: (red ? '0' : num) + suit + '.png', text: NUMBER_TEXT[num] + SUIT_TEXT[suit], red };
+}
+
+function labelOf(value) { return tileInfo(value).text; }
+
+// 牌面图；opt: { clickable, drawn, armed, mini, small }
+// 门风跟着庄家走：庄家是东，之后按座次顺延（座位号本身不变）
+function windOf(seat, dealer) {
+  const d = Number(dealer) || 0;
+  return ['东', '南', '西', '北'][(((seat - d) % 4) + 4) % 4] || '';
+}
+
+// round_index "100" → 东1局（[x y z] = x场 y局 z本场）
+function roundName(idx) {
+  const s = String(idx || '').padEnd(3, '0');
+  const wind = ['东', '南', '西', '北'][Number(s[0]) - 1] || '东';
+  return `${wind}${Number(s[1]) + 1}局`;
+}
+
+// 牌面值：赤5（10/20/30）归一成 5、副露标记（1xx/2xx/3xx）取低两位（后端也是这么算的）
+function normValue(v) {
+  let n = Math.abs(Number(v) || 0);
+  if (n > 100) n %= 100; // 碰/杠/吃 标记 → 牌值
+  return n % 10 === 0 ? n - 5 : n;
+}
+
+// 列表里有没有这张牌（按牌面值比较，赤5 也能对上）
+function inTiles(list, v) {
+  return (list || []).some(t => normValue(t) === normValue(v));
+}
+
+function tileHtml(value, opt) {
+  const o = opt || {};
+  const info = tileInfo(value);
+  const cls = ['tile'];
+  if (o.mini) cls.push('mini');
+  else if (o.small) cls.push('small');
+  if (o.drawn) cls.push('drawn');
+  if (o.armed) cls.push('armed');
+  if (o.dim) cls.push('dim');
+  if (o.clickable) cls.push('clickable');
+  const click = o.clickable ? ` onclick="onTileClick(${Number(value)})"` : '';
+  // data-tile 存原始值（赤5 = 10/20/30）、data-norm 存牌面值：
+  // 悬停时按牌面值找"同一张牌"，赤5 再用另一套样式区分
+  const raw = Number(value);
+  const norm = normValue(value);
+  const hover = ` onmouseover="onTileHover(${norm})" onmouseout="onTileLeave()"`;
+  return `<img class="${cls.join(' ')}" src="${TILE_BASE}${info.file}" alt="${info.text}"` +
+    ` data-tile="${raw}" data-norm="${norm}" draggable="false"${click}${hover}>`;
+}
+
+// 悬停某张牌：把场上所有"同一张牌"高亮出来。
+// 牌河里用蓝色（hl-river），手牌/副露里用金色（hl-same），赤5 再叠一个红框（hl-red）。
+function highlightSameTile(norm) {
+  const n = Number(norm);
+  if (!n) return;
+  document.querySelectorAll('#gameTable img.tile[data-norm]').forEach(el => {
+    if (Number(el.dataset.norm) !== n) return;
+    el.classList.add(el.closest('.seat-discards') ? 'hl-river' : 'hl-same');
+    if (Number(el.dataset.tile) % 10 === 0) el.classList.add('hl-red');
+  });
+}
+
+function clearTileHighlight() {
+  document.querySelectorAll('#gameTable .hl-same, #gameTable .hl-river, #gameTable .hl-red')
+    .forEach(el => el.classList.remove('hl-same', 'hl-river', 'hl-red'));
+}
+
+// ---------- 听牌提示 ----------
+
+// 某张牌还能摸到几张：4 −（自己手里的 + 场上已经见到的）
+function remainCount(tile) {
+  const n = normValue(tile);
+  let seen = 0;
+  const count = list => (list || []).forEach(v => {
+    if (normValue(v) === n) seen++;
+  });
+
+  count(roomState.hand);
+  (roomState.melds || []).forEach(group => count(group));
+
+  const table = roomState.table || {};
+  (table.discards || []).forEach(list => count(list));
+  (table.melds || []).forEach(list => (list || []).forEach(group => count(group)));
+  count(table.dora_pointers); // 宝牌指示牌也是明牌
+
+  return Math.max(0, 4 - seen);
+}
+
+function waitsText(waits) {
+  if (!waits || !waits.length) return '无';
+  return waits.map(w => `${labelOf(w)}(剩${remainCount(w)})`).join('、');
+}
+
+// 手牌右侧常驻显示"现在听什么"（传 text 时临时显示别的，比如悬停时的"打这张听什么"）
+function renderTenpaiHint(text) {
+  const el = document.getElementById('tenpaiHint');
+  if (!el) return;
+
+  if (text) {
+    el.textContent = text;
+    el.style.color = 'var(--gold, #d9a441)';
+    return;
+  }
+
+  el.style.color = '';
+  const waits = roomState.myWaits || [];
+  el.textContent = waits.length ? `听 ${waitsText(waits)}` : '';
+}
+
+// 鼠标移到一张牌上：轮到我出牌 → 显示"打这张会听什么"；其他时候回到"现在听什么"
+function onTileHover(norm) {
+  highlightSameTile(norm);
+
+  const opts = roomState.options || {};
+  const tenpais = opts.tenpais || {};
+  const waits = tenpais[String(norm)];
+
+  if (isMyTurn() && Array.isArray(waits)) {
+    renderTenpaiHint(waits.length ? `打 ${labelOf(norm)} → 听 ${waitsText(waits)}` : `打 ${labelOf(norm)} → 不听牌`);
+    return;
+  }
+
+  renderTenpaiHint();
+}
+
+function onTileLeave() {
+  clearTileHighlight();
+  renderTenpaiHint();
+}
+
+// 牌背图（别家手牌、牌山）
+function backHtml(color, extra) {
+  const c = SEAT_BACK.includes(color) ? color : 'blue';
+  return `<img class="tile back ${extra || ''}" src="${TILE_BASE}back_${c}.png" alt="牌背" draggable="false">`;
+}
+
+function meldLabel(meld) {
+  const kind = Math.floor(Math.abs(meld[0]) / 100);
+  if (kind === 2) return '杠';
+  if (kind === 3) return '吃';
+  return '碰';
+}
+
+function yakuText(yaku) {
+  if (!yaku) return '';
+  return Object.keys(yaku)
+    .filter(k => k !== 'yakuman')
+    .map(k => `${YAKU_TEXT[k] || k}${yaku[k] > 1 ? `×${yaku[k]}` : ''}`)
+    .join('、');
+}
+
+function setTableStatus(text) {
+  const el = document.getElementById('tableStatus');
+  if (el) el.textContent = text || '';
+}
+
+function mySeat() {
+  if (roomState.mySeat != null) return roomState.mySeat;
+  if (!currentUser || !Array.isArray(roomState.players)) return null;
+  const me = roomState.players.find(p => sameId(p.id, currentUser.id));
+  return me && me.seat != null ? me.seat : null;
+}
+
+function isMyTurn() {
+  const opts = roomState.options;
+  return !!opts && sameId(opts.seat, mySeat());
+}
+
+// 服务端下发的私有手牌（连接建立时的 hello.you，或轮询里的 you）
+function applyHand(you) {
+  if (!you || typeof you !== 'object') return;
+  roomState.hand = Array.isArray(you.hand) ? you.hand : [];
+  roomState.melds = Array.isArray(you.melds) ? you.melds : [];
+  if (you.seat != null) roomState.mySeat = you.seat;
+  document.getElementById('gameTable').classList.remove('hidden');
+  // 服务端顺便把"你还能鸣什么"带回来了（刷新/重连后按钮不会丢）
+  if (you.claim) applyClaimOptions(you.claim);
+  renderHand();
+  renderTenpaiHint(); // 手牌变了，听牌提示跟着更新
+}
+
+// 服务端下发的可选动作（turn_options，只发给本人）
+function applyTurnOptions(msg) {
+  if (!msg || typeof msg !== 'object') return;
+
+  const seat = mySeat();
+
+  // 服务端只发给本人；座位对不上（比如刚进牌桌还没拿到座位）时以服务端为准
+  if (msg.seat != null && seat != null && !sameId(msg.seat, seat)) return;
+
+  roomState.mySeat = msg.seat != null ? msg.seat : roomState.mySeat;
+  roomState.options = msg;
+  roomState.claim = null; // 轮到自己了，鸣牌窗口肯定已经关了
+  roomState.finished = false;
+  roomState.riichiArmed = false;
+  // 记下"现在听什么"：打掉刚摸到的那张之后的待牌（手牌只有轮到自己才会变，所以不会过期）
+  const tenpais = msg.tenpais || {};
+  const currentKey = String(normValue(msg.drawn));
+  roomState.myWaits = Array.isArray(tenpais[currentKey]) ? tenpais[currentKey] : [];
+  renderResult(null); // 新的一手开始，收掉上一局的结果面板
+  applyHand({ seat: roomState.mySeat, hand: msg.hand, melds: msg.melds });
+}
+
+// 服务端问"这张牌你要不要鸣"（碰/吃/杠/荣和/过），只发给能鸣的人
+function applyClaimOptions(msg) {
+  if (!msg || typeof msg !== 'object') return;
+  if (msg.seat != null && !sameId(msg.seat, mySeat())) return;
+
+  roomState.claim = msg;
+  roomState.options = null;
+  roomState.riichiArmed = false;
+  renderActions();
+
+  setTableStatus(`别人打出 ${labelOf(msg.tile)}，你可以：`);
+}
+
+function renderHand() {
+  const handBox = document.getElementById('tableHand');
+  const meldBox = document.getElementById('tableMelds');
+  const countEl = document.getElementById('handCount');
+  if (!handBox || !meldBox) return;
+
+  const hand = roomState.hand || [];
+  const opts = roomState.options || {};
+  const drawn = opts.drawn;
+  const riichiNow = !!opts.riichi; // 已经立直：只能摸切
+  const riichiTiles = opts.riichi_tiles || [];
+  const clickable = isMyTurn() && !roomState.finished;
+
+  // 刚摸到的那张后端单独发过来（没有混在排序后的手牌里），这里摆到最右边
+  const handHtml = hand.map(v => tileHtml(v, {
+    clickable,
+    dim: riichiNow && drawn !== 0 && v !== drawn, // 立直中不能打的牌置灰
+    armed: roomState.riichiArmed && inTiles(riichiTiles, v),
+  })).join('');
+
+  const drawnHtml = (drawn != null && drawn !== 0)
+    ? '<span class="drawn-gap"></span>' + tileHtml(drawn, {
+      clickable,
+      drawn: true,
+      armed: roomState.riichiArmed && inTiles(riichiTiles, drawn),
+    })
+    : '';
+
+  handBox.innerHTML = (handHtml + drawnHtml) || '<span class="table-hint">等待发牌...</span>';
+
+  meldBox.innerHTML = (roomState.melds || []).map(m =>
+    `<span class="meld-group">${m.map(v => tileHtml(v, { small: true })).join('')}` +
+    `<small class="meld-label">${meldLabel(m)}</small></span>`
+  ).join('');
+
+  if (countEl) {
+    const total = hand.length + (drawn != null && drawn !== 0 ? 1 : 0);
+    countEl.textContent = total ? `（${total} 张）` : '';
+  }
+
+  renderActions();
+}
+
+function renderActions() {
+  const box = document.getElementById('tableActions');
+  if (!box) return;
+
+  if (roomState.finished) {
+    box.innerHTML = '';
+    return;
+  }
+
+  // 鸣牌窗口优先：别人打出的牌，我要不要碰/吃/杠/荣和/过
+  if (roomState.claim) {
+    renderClaimActions(box);
+    return;
+  }
+
+  const opts = roomState.options;
+
+  if (!opts || !isMyTurn()) {
+    box.innerHTML = '';
+    return;
+  }
+
+  const parts = [];
+
+  if (opts.can_tsumo) parts.push('<button class="btn primary" onclick="onAction(\'tsumo\')">自摸</button>');
+  if (opts.can_ryuukyoku) parts.push('<button class="btn" onclick="onAction(\'ryuukyoku\')">九种九牌</button>');
+
+  // 立直是两步：先按「立直」进入待选，再点金框的牌打出。
+  // 这里的「取消」只取消这个待选状态（还没宣言），宣言之后是不可撤销的（后端也会拒）。
+  if (opts.riichi) {
+    parts.push(`<span class="chip riichi-chip">已${opts.riichi === 2 ? '双立直' : '立直'}</span>`);
+    parts.push('<span class="table-hint">只能摸切</span>');
+  } else if (roomState.riichiArmed) {
+    parts.push('<button class="btn armed" onclick="disarmRiichi()">取消</button>');
+  } else if (opts.can_riichi) {
+    parts.push('<button class="btn" onclick="armRiichi()">立直</button>');
+  }
+
+  (opts.kans || []).forEach(t => {
+    parts.push(`<button class="btn" onclick="onAction('kan', ${Number(t)})">杠 ${labelOf(t)}</button>`);
+  });
+
+  box.innerHTML = parts.join('') || '<span class="table-hint">轮到你了，点一张手牌打出</span>';
+}
+
+// 鸣牌按钮：目标牌放大高亮 + 荣和 / 碰 / 吃（图）/ 杠 / 过
+function renderClaimActions(box) {
+  const claim = roomState.claim;
+  const claims = claim.claims || [];
+  const parts = [];
+
+  // 被鸣的那张：放大 + 高亮，一眼看清打出来的是什么
+  parts.push(`<span class="claim-target">${tileHtml(claim.tile, { small: true, drawn: true })}` +
+    `<small>${escapeHtml(labelOf(claim.tile))}</small></span>`);
+
+  if (claims.includes('ron')) parts.push('<button class="btn primary" onclick="onClaim(\'ron\', 0)">荣和</button>');
+  if (claims.includes('pon')) parts.push('<button class="btn" onclick="onClaim(\'pon\', 0)">碰</button>');
+  if (claims.includes('kan')) parts.push('<button class="btn" onclick="onClaim(\'kan\', 0)">杠</button>');
+
+  // 吃：直接摆出三张牌的图（不写"吃三万四万五万"了）
+  (claim.chi || []).forEach(combo => {
+    const imgs = combo.map(v => tileHtml(v, { mini: true })).join('');
+    parts.push(`<button class="btn chi-btn" onclick="onClaim('chi', 0, [${combo.join(',')}])">吃 ${imgs}</button>`);
+  });
+
+  parts.push('<button class="btn" onclick="onClaim(\'pass\', 0)">过</button>');
+
+  box.innerHTML = parts.join('');
+}
+
+function onClaim(action, tile, tiles) {
+  sendGameAction(action, tile, tiles);
+  roomState.claim = null;      // 已经回复，先收起按钮（后端确认后会推新状态）
+  renderActions();
+}
+
+function onAction(action, tile) {
+  sendGameAction(action, tile);
+}
+
+function armRiichi() {
+  roomState.riichiArmed = true;
+  setTableStatus('立直：点一张金框的牌打出作为宣言牌（不想立直就按「取消」）');
+  renderHand();
+}
+
+function disarmRiichi() {
+  roomState.riichiArmed = false;
+  setTableStatus('');
+  renderHand();
+}
+
+function onTileClick(value) {
+  if (!isMyTurn() || roomState.finished) return;
+
+  const opts = roomState.options || {};
+  const drawn = opts.drawn;
+
+  // 已经立直：只能摸切（后端也会拦，这里只是别让人白点）
+  if (opts.riichi && drawn !== 0 && Number(value) !== Number(drawn)) {
+    setTableStatus(`立直中只能摸切，请打出刚摸到的那张（${labelOf(drawn)}）`);
+    return;
+  }
+
+  if (roomState.riichiArmed) {
+    const tiles = opts.riichi_tiles || [];
+    if (!inTiles(tiles, value)) {
+      setTableStatus('这张牌打出去就不听牌了，不能当立直宣言牌');
+      return;
+    }
+    roomState.riichiArmed = false;
+    sendGameAction('riichi', value);
+    return;
+  }
+
+  sendGameAction('discard', value);
+}
+
+function actionText(action, tile) {
+  if (action === 'discard') return `打 ${labelOf(tile)}`;
+  if (action === 'riichi') return `立直（打 ${labelOf(tile)}）`;
+  if (action === 'kan') return `杠 ${labelOf(tile)}`;
+  if (action === 'tsumo') return '自摸';
+  if (action === 'ryuukyoku') return '九种九牌';
+  return action;
+}
+
+// 操作原样发回后端；后端会重新校验（前端的按钮只是提示）
+function sendGameAction(action, tile, tiles) {
+  const socket = wsState.socket;
+
+  if (!socket || socket.readyState !== 1) {
+    setTableStatus('实时连接已断开，操作没有发出去');
+    return;
+  }
+
+  const payload = { type: 'action', action };
+  if (tile != null) payload.tile = tile;
+  if (Array.isArray(tiles) && tiles.length) payload.tiles = tiles; // 吃：要吃的 3 张
+
+  try {
+    socket.send(JSON.stringify(payload));
+  } catch (_) {
+    setTableStatus('操作发送失败');
+    return;
+  }
+
+  setTableStatus('已发送：' + actionText(action, tile));
+}
+
+// 公开状态：四家围桌（对家在上、下家在右、上家在左、自己在下）+ 牌河 + 宝牌
+function renderTable() {
+  const panel = document.getElementById('gameTable');
+  const data = roomState.table;
+
+  if (!panel || !data) {
+    if (panel) panel.classList.add('hidden');
+    return;
+  }
+
+  panel.classList.remove('hidden');
+
+  const players = data.players || [];
+  const my = mySeat();
+
+  // 局况
+  const round = String(data.round_index || '');
+  const windText = ['东', '南', '西', '北'][Number(round[0] || 1) - 1] || '';
+  // 局数 + 本场（本场写在 round_index 的第三位，比如 "101" = 东1局1本场）
+  const honba = round ? Number(round[2] || 0) : 0;
+  document.getElementById('tableRound').textContent = round
+    ? `${windText}${Number(round[1] || 0) + 1}局${honba ? ` ${honba}本场` : ''}`
+    : '-';
+
+  const cur = players[data.current_player];
+  const turnEl = document.getElementById('tableTurn');
+  turnEl.textContent = data.finished
+    ? '本局结束'
+    : (my != null && data.current_player === my ? '轮到你出牌' : `轮到 ${(cur && cur.username) || ('座位 ' + data.current_player)}`);
+  turnEl.style.color = my != null && data.current_player === my && !data.finished ? 'var(--primary)' : '';
+
+  document.getElementById('tableRest').textContent = `牌山 ${data.rest != null ? data.rest : '-'} 张`;
+  // 宝牌按习惯显示"指示牌"（不是宝牌本身）
+  const doraPointers = Array.isArray(data.dora_pointers) && data.dora_pointers.length
+    ? data.dora_pointers
+    : (data.outer_dora || []);
+  document.getElementById('tableDora').innerHTML =
+    doraPointers.map(v => tileHtml(v, { mini: true })).join('') || '-';
+
+  // 四家：轮转方向 下家=+1、对家=+2、上家=+3
+  renderSeatBox('seatTop', my == null ? null : (my + 2) % 4, data);
+  renderSeatBox('seatRight', my == null ? null : (my + 1) % 4, data);
+  renderSeatBox('seatLeft', my == null ? null : (my + 3) % 4, data);
+  renderSeatBox('seatSelf', my, data);
+}
+
+function renderSeatBox(elId, seat, data) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+
+  const players = data.players || [];
+
+  if (seat == null || !players[seat]) {
+    el.className = 'seat-box empty';
+    el.innerHTML = '<div class="seat-name">等待玩家</div>';
+    return;
+  }
+
+  const isMe = seat === mySeat();
+  const active = seat === data.current_player && !data.finished;
+  const riichi = (data.riichi || [])[seat];
+  const count = Number((data.hand_counts || [])[seat] || 0);
+  const scores = Array.isArray(data.scores) ? data.scores : [];
+  const discards = ((data.discards || [])[seat] || []).map(v => tileHtml(v, { mini: true })).join('');
+
+  // 别家的副露（碰/吃/杠）是公开信息，画在他自己的牌河上面
+  const melds = ((data.melds || [])[seat] || []).map(m =>
+    `<span class="meld-group">${m.map(v => tileHtml(v, { mini: true })).join('')}</span>`
+  ).join('');
+
+  // 自己的手牌在下面明牌区，这里不画牌背
+  const backs = data.finished || isMe ? '' : Array.from({ length: Math.min(count, 14) }, () => backHtml(SEAT_BACK[seat])).join('');
+
+  el.className = `seat-box${isMe ? ' self' : ''}${active ? ' active' : ''}`;
+  el.innerHTML = `
+    <div class="seat-name">
+      <span class="wind">${windOf(seat, data.dealer)}</span>
+      <span>${escapeHtml(players[seat].username || '')}</span>
+      <span class="seat-score">${scores[seat] != null ? scores[seat] : ''}</span>
+      ${seat === data.dealer ? '<span class="dealer">庄</span>' : ''}
+      ${isMe ? '<span class="me">你</span>' : ''}
+      ${riichi ? `<span class="riichi-tag">${riichi === 2 ? '双立直' : '立直'}</span>` : ''}
+      ${active ? '<span class="turn-badge">手番</span>' : ''}
+    </div>
+    ${backs ? `<div class="seat-backs">${backs}</div>` : ''}
+    ${melds ? `<div class="seat-melds">${melds}</div>` : ''}
+    <div class="seat-discards">${discards}</div>`;
+}
+
+// 中间那行提示（谁摸了/打了什么）
+function setTableLog(text) {
+  const el = document.getElementById('tableLog');
+  if (el && text) el.textContent = text;
+}
+
+// 和了/流局的结果面板
+function renderResult(html) {
+  const el = document.getElementById('tableResult');
+  if (!el) return;
+
+  if (!html) {
+    el.classList.add('hidden');
+    el.innerHTML = '';
+    return;
+  }
+
+  el.classList.remove('hidden');
+  el.innerHTML = html;
+}
+
+function eventText(event) {
+  if (!event || !event.action) return '';
+  const players = roomState.players || [];
+  const who = (players[event.seat] && players[event.seat].username) || `座位 ${event.seat}`;
+  const riichi = ((roomState.table && roomState.table.riichi) || [])[event.seat];
+
+  switch (event.action) {
+    case 'draw': return `${who} 摸牌`;
+    case 'discard': return riichi ? `${who} 摸切 ${labelOf(event.tile)}` : `${who} 打出 ${labelOf(event.tile)}`;
+    case 'riichi': return `${who} 立直，打出 ${labelOf(event.tile)}`;
+    case 'kan': return `${who} 杠 ${labelOf(event.tile)}`;
+    case 'rinshan': return `${who} 摸岭上牌`;
+    case 'claim': return `${who} 打出 ${labelOf(event.tile)}，等鸣牌`;
+    case 'chankan': return `${who} 加杠 ${labelOf(event.tile)}，等抢杠`;
+    case 'pon': return `${who} 碰 ${labelOf(event.tile)}`;
+    case 'chi': return `${who} 吃 ${labelOf(event.tile)}`;
+    default: return '';
+  }
 }
 
 // ---------- WebSocket：房间实时通道 ----------
@@ -886,7 +1497,138 @@ function onWsMessage(msg) {
       applyRoomData(msg.room).catch(() => {});
       break;
     case 'game_state':
-      applyGameData(msg.game);
+      // hello/推送里可能带本人的手牌与可选动作（只有本人收得到）
+      if (msg.you) applyHand(msg.you);
+      if (msg.options) applyTurnOptions(msg.options);
+      applyGameData(msg.game || msg);           // 先更新公开状态，日志才能看出"摸切"
+      if (msg.event) setTableLog(eventText(msg.event));
+      break;
+    case 'your_hand':
+      // 没轮到自己时的私有更新（打牌后 / 立直自动摸切之后）。
+      // 手牌被服务端重发了，旧的 drawn 和可选动作就作废了 —— 不然会把同一张牌画两次。
+      if (msg.you) {
+        roomState.options = null;
+        applyHand(msg.you);
+        renderHand();
+      }
+      break;
+    case 'claim_options':
+      applyClaimOptions(msg);
+      break;
+    case 'round_start':
+      // 下一局开始：收掉结果面板、清掉旧状态
+      roomState.finished = false;
+      roomState.options = null;
+      roomState.claim = null;
+      roomState.riichiArmed = false;
+      roomState.hand = [];
+      roomState.melds = [];
+      renderResult(null);
+      renderActions();
+      if (msg.game) applyGameData(msg.game);
+      setTableLog(`${roundName(msg.round_index)} 开始${msg.honba ? `（${msg.honba} 本场）` : ''}`);
+      break;
+    case 'game_end': {
+      // 终局：顺位表（按服务端给的 order 从高到低）
+      roomState.finished = true;
+      roomState.options = null;
+      roomState.claim = null;
+      renderActions();
+
+      const names = msg.names || [];
+      const scores = msg.scores || [];
+      const order = Array.isArray(msg.order) && msg.order.length
+        ? msg.order
+        : scores.map((_, i) => i).sort((a, b) => (scores[b] || 0) - (scores[a] || 0));
+
+      const rows = order.map((seat, i) =>
+        `<div class="result-line">${i + 1} 位　${escapeHtml(names[seat] || `座位 ${seat}`)}　${scores[seat] != null ? scores[seat] : ''}</div>`
+      ).join('');
+
+      setTableLog('对局结束');
+      setTableStatus('');
+      renderResult(`<div class="result-title">对局结束 · 顺位</div>${rows}`);
+      break;
+    }
+    case 'turn_options':
+      applyTurnOptions(msg);
+      break;
+    case 'hu': {
+      roomState.finished = true;
+      roomState.options = null;
+      roomState.claim = null;
+      renderActions();
+
+      const players = roomState.players || [];
+      const nameOf = s => (players[s] && players[s].username) || `座位 ${s}`;
+      const winners = Array.isArray(msg.winners) && msg.winners.length
+        ? msg.winners
+        : [{ seat: msg.seat, yaku: msg.yaku, fu: msg.fu, agari: msg.agari }];
+
+      setTableLog(`${winners.map(w => nameOf(w.seat)).join('、')} ${msg.tsumo ? '自摸' : '荣和'} ${labelOf(msg.tile)}`);
+      setTableStatus('');
+
+      // 多响就把每个和牌家都列出来
+      const LIMIT_TEXT = { mangan: '满贯', haneman: '跳满', baiman: '倍满', sanbaiman: '三倍满', yakuman: '役满' };
+      const deltas = msg.deltas || {};
+      const scores = Array.isArray(msg.scores) ? msg.scores : [];
+
+      const payLine = Object.keys(deltas).map(s => {
+        const v = Number(deltas[s]);
+        return `<span class="money ${v > 0 ? 'up' : 'down'}">${escapeHtml(nameOf(Number(s)))} ${v > 0 ? '+' : ''}${v}</span>`;
+      }).join('');
+
+      const totalLine = scores.map((v, s) => `${escapeHtml(nameOf(s))} ${v}`).join('　');
+
+      renderResult(winners.map(w => {
+        const yaku = w.yaku || {};
+        const yakuman = yaku.yakuman || 0;
+        const han = Object.keys(yaku).filter(k => k !== 'yakuman').reduce((n, k) => n + (yaku[k] || 0), 0);
+        const limit = w.limit ? `${LIMIT_TEXT[w.limit] || ''} ` : '';
+        const gain = w.points ? ` · ${limit}+${w.points}` : '';
+
+        return `<div class="result-title">${sameId(w.seat, mySeat()) ? '你' : escapeHtml(nameOf(w.seat))} 和了！${gain}</div>` +
+          `<div class="result-line">${w.agari ? '庄家' : '闲家'} · ${w.fu} 符 · ${yakuman ? yakuman + ' 倍役满' : han + ' 番'}${msg.honba ? ` · ${msg.honba} 本场` : ''}</div>` +
+          `<div class="result-line">${yakuText(yaku) || '—'}</div>`;
+      }).join('') +
+        `<div class="result-line money-line">${payLine}</div>` +
+        (totalLine ? `<div class="result-line total-line">${totalLine}</div>` : ''));
+      break;
+    }
+    case 'ryuukyoku': {
+      roomState.finished = true;
+      roomState.options = null;
+      roomState.claim = null;
+      renderActions();
+
+      const REASON_TEXT = {
+        kyuushu_kyuuhai: '九种九牌',
+        four_riichi: '四家立直',
+        four_wind: '四风连打',
+        four_kan: '四杠散了',
+        exhausted: '荒牌平局',
+        nagashi_mangan: '流局满贯',
+      };
+      const why = REASON_TEXT[msg.reason] || '流局';
+      const roster = roomState.players || [];
+      const who = s => ((roster[s] && roster[s].username) || `座位 ${s}`);
+      const deltas = msg.deltas || {};
+      const payLine = Object.keys(deltas).map(s => {
+        const v = Number(deltas[s]);
+        return `<span class="money ${v > 0 ? 'up' : 'down'}">${escapeHtml(who(Number(s)))} ${v > 0 ? '+' : ''}${v}</span>`;
+      }).join('');
+      const tenpaiLine = Array.isArray(msg.tenpai)
+        ? `<div class="result-line">听牌：${msg.tenpai.map((t, s) => (t ? who(s) : null)).filter(Boolean).join('、') || '无（全员未听）'}</div>`
+        : '';
+
+      setTableLog(`流局：${why}`);
+      setTableStatus('');
+      renderResult(`<div class="result-title">流局 · ${why}</div>` + tenpaiLine +
+        (payLine ? `<div class="result-line money-line">${payLine}</div>` : ''));
+      break;
+    }
+    case 'action_error':
+      setTableStatus('操作被拒绝：' + (msg.error || ''));
       break;
     case 'game_started':
       roomState.started = true;
@@ -1024,8 +1766,16 @@ function releaseRoom() {
   roomState.started = false;
   roomState.startRequested = false;
   roomState.fullSince = 0;
+  roomState.mySeat = null;
+  roomState.hand = [];
+  roomState.melds = [];
+  roomState.options = null;
+  roomState.table = null;
+  roomState.finished = false;
+  roomState.riichiArmed = false;
 
   document.getElementById('gameRoom').classList.add('hidden');
+  document.getElementById('gameTable').classList.add('hidden');
   document.getElementById('gamePanel').classList.add('hidden');
   document.getElementById('playerList').innerHTML = '';
   document.getElementById('ruleList').innerHTML = '';

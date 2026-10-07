@@ -46,8 +46,9 @@ func StartGame(room *model.Room) {
 		return
 	}
 
+	// 打乱切片本身：打乱后"下标 = 座位号"，起家（座位 0）就是随机产生的
 	rand.Shuffle(len(room.Players), func(i, j int) {
-		room.Players[i].Seat, room.Players[j].Seat = room.Players[j].Seat, room.Players[i].Seat
+		room.Players[i], room.Players[j] = room.Players[j], room.Players[i]
 	})
 
 	room.Status = model.RoomStatusPlaying

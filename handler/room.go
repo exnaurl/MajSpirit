@@ -31,18 +31,29 @@ func CreateRoomHandler(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, echo.Map{"error": err.Error()})
 	}
 
+	players := []model.Player{
+		{ID: userID, Username: user.Username},
+	}
+
+	// 人机：POST /api/room/create?bots=3 → 补 3 个机器人（不吃碰杠，能正常和牌）
+	players = service.AddBots(players, service.BotCountFromQuery(c.QueryParam("bots")))
+
 	room := &model.Room{
-		ID:       roomID,
-		HostID:   userID,
-		GameRule: model.GameRuleDefault,
-		Players: []model.Player{
-			{ID: userID, Username: user.Username, Seat: 0},
-		},
+		ID:        roomID,
+		HostID:    userID,
+		GameRule:  model.GameRuleDefault,
+		Players:   players,
 		Status:    model.RoomStatusWaiting,
 		CreatedAt: time.Now(),
 	}
 	service.Rooms.Store(roomID, room)
 	service.RoomMu.Unlock()
+
+	// 创建时就满员（带人机的情况）→ 立刻开局。
+	// 平时开局是"第 4 个人 join"触发的，机器人不会自己 join，所以这里必须补一次。
+	if len(room.Players) == model.MaxPlayers {
+		service.StartGame(room)
+	}
 
 	// 房间刚建好还没有别的连接，直接回一份快照即可（形状与 WS 推送一致）
 	return c.JSON(http.StatusOK, service.RoomSnapshot(room))
@@ -87,26 +98,17 @@ func JoinRoomHandler(c echo.Context) error {
 		return c.JSON(http.StatusConflict, echo.Map{"error": "房间已满"})
 	}
 
-	used := make(map[int]bool)
-
+	// 座位号 = 切片下标，所以加入就是直接 append（座位在开局时才会被 shuffle 决定）
 	for _, p := range room.Players {
 		if p.ID == userID {
 			service.RoomMu.Unlock()
 			return c.JSON(http.StatusOK, service.RoomSnapshot(room)) // 已经在房间里：直接给快照
 		}
-		used[p.Seat] = true
-	}
-
-	seat := 0
-
-	for used[seat] {
-		seat++
 	}
 
 	room.Players = append(room.Players, model.Player{
 		ID:       userID,
 		Username: user.Username,
-		Seat:     seat,
 	})
 
 	shouldStart := len(room.Players) == model.MaxPlayers
@@ -224,7 +226,18 @@ func GetGameHandler(c echo.Context) error {
 		return c.JSON(http.StatusForbidden, echo.Map{"error": "你不在这一局里"})
 	}
 
-	return c.JSON(http.StatusOK, service.GameSnapshot(state))
+	// 公开快照 + 本人的手牌/可选动作（轮询兜底时也拿得到手牌）
+	snapshot := service.GameSnapshot(state)
+
+	if seat := service.SeatOf(state, userID); seat >= 0 {
+		snapshot["you"] = service.HandView(state, seat)
+
+		if seat == state.CurrentPlayer && !service.RoundFinished(state) {
+			snapshot["options"] = service.TurnOptions(state)
+		}
+	}
+
+	return c.JSON(http.StatusOK, snapshot)
 }
 
 // StartGameHandler POST /api/game/start

@@ -2,7 +2,7 @@ package handler
 
 import (
 	"net/http"
-	"strings"
+	"net/url"
 
 	"MajSpirit/service"
 
@@ -17,11 +17,18 @@ var wsUpgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
 		origin := r.Header.Get("Origin")
 
+		// 非浏览器客户端（没有 Origin）放行；浏览器来的必须是同源（IP/域名 + 端口完全一致）。
+		// 用 HasPrefix 会被 http://我的IP:8080.evil.com 这种域绕过，所以按 host 精确比较。
 		if origin == "" {
 			return true
 		}
 
-		return strings.HasPrefix(origin, "http://"+r.Host) || strings.HasPrefix(origin, "https://"+r.Host)
+		u, err := url.Parse(origin)
+		if err != nil {
+			return false
+		}
+
+		return u.Host == r.Host
 	},
 }
 
@@ -74,8 +81,19 @@ func GameWSHandler(c echo.Context) error {
 		return nil
 	}
 
-	return service.ServeWS(conn, gameID, userID, map[string]any{
+	// 公开状态给所有人；手牌和"能做什么"只给本人（hello 是这条连接独有的）
+	hello := map[string]any{
 		"type": "game_state",
 		"game": service.GameSnapshot(state),
-	})
+	}
+
+	if seat := service.SeatOf(state, userID); seat >= 0 {
+		hello["you"] = service.HandView(state, seat)
+
+		if seat == state.CurrentPlayer && !service.RoundFinished(state) {
+			hello["options"] = service.TurnOptions(state)
+		}
+	}
+
+	return service.ServeWS(conn, gameID, userID, hello)
 }
