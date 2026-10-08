@@ -109,6 +109,9 @@ func TestRiichi(t *testing.T) {
 	state.CurrentPlayer = 1
 	state.Hands[1] = []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 21, 22, 23, 25, 29}
 
+	// 双立直现在由 FirstLap 决定（真实开局它是 true），这里手动摆成第一巡
+	state.FirstLap = true
+
 	if err := declareRiichi(state, 1, 1); err == nil {
 		t.Fatal("打 1万之后不听牌，立直应该被拒绝")
 	}
@@ -117,7 +120,7 @@ func TestRiichi(t *testing.T) {
 		t.Fatalf("立直失败：%v", err)
 	}
 
-	// 自己第一张牌 + 场上没副露 → 双立直，并且一発还有效
+	// 第一巡 + 场上没副露 → 双立直，并且一発还有效
 	if state.Riichi[1] != 2 || !state.RiichiTimer[1] {
 		t.Fatalf("立直状态不对：Riichi=%d Timer=%v", state.Riichi[1], state.RiichiTimer[1])
 	}
@@ -1302,6 +1305,30 @@ func TestNextRound(t *testing.T) {
 		t.Fatal("东风战东4局轮庄应该终局")
 	}
 
+	// オーラス（最后一局）庄家单独领先 → 连庄也终局（亲トップのアガリ止め）
+	state.RoundIndex = "130"
+	state.Dealer = 0
+	state.Scores = [4]int{40000, 20000, 20000, 20000}
+
+	if _, last := nextRoundIndex(state, true); !last {
+		t.Fatal("东4局庄家领先，连庄也应该终局")
+	}
+
+	// 并列领先（不算单独领先）→ 继续连庄
+	state.Scores = [4]int{30000, 30000, 20000, 20000}
+
+	if idx, last := nextRoundIndex(state, true); last || idx != "131" {
+		t.Fatalf("并列领先不该终局，应连庄到 131，得到 %s last=%v", idx, last)
+	}
+
+	// 不是最后一局（东3局）→ 领先也继续连庄
+	state.RoundIndex = "120"
+	state.Scores = [4]int{40000, 20000, 20000, 20000}
+
+	if _, last := nextRoundIndex(state, true); last {
+		t.Fatal("东3局不该终局")
+	}
+
 	// 真正开下一局：牌河/立直清空、庄家移动、牌山与宝牌重发、供托留着
 	state2 := newTestState(nil)
 	state2.RoundIndex = "100"
@@ -1674,6 +1701,145 @@ func TestTsumoDeltasDealer(t *testing.T) {
 
 	if delta2[2] != 4000 || delta2[0] != -2000 || delta2[1] != -1000 || delta2[3] != -1000 {
 		t.Fatalf("闲家自摸收支不对：%v", delta2)
+	}
+}
+
+// 分数（Point）结算：基础分 + 名次分 + 负分惩罚 + 负分者给第一名的奖励
+func TestRatingDeltas(t *testing.T) {
+	state := newTestState(nil)
+	state.Dealer = 0
+
+	// 座位0 一位、座位3 负分（40000 / 30000 / 20000 / -2000）
+	state.Scores = [4]int{40000, 30000, 20000, -2000}
+
+	delta := ratingDeltas(state)
+
+	// 基础分：(40000-25000)/1000=15、(30000-25000)/1000=5、(20000-25000)/1000=-5、(-2000-25000)/1000=-27
+	// 名次分：+10 / +5 / -5 / -10
+	// 负分者额外 -10；负分人数 1 → 一位额外 +10
+	if delta[0] != 35 { // 15 + 10 + 10
+		t.Fatalf("一位分数不对：%d（期望 35）", delta[0])
+	}
+
+	if delta[1] != 10 { // 5 + 5
+		t.Fatalf("二位分数不对：%d（期望 10）", delta[1])
+	}
+
+	if delta[2] != -10 { // -5 - 5
+		t.Fatalf("三位分数不对：%d（期望 -10）", delta[2])
+	}
+
+	if delta[3] != -47 { // -27 - 10(名次) - 10(负分)
+		t.Fatalf("四位分数不对：%d（期望 -47）", delta[3])
+	}
+
+	// 两个负分玩家 → 一位额外 +20
+	state.Scores = [4]int{40000, -1000, 20000, -2000}
+
+	delta = ratingDeltas(state)
+
+	if delta[0] != 15+10+20 { // 基础 15 + 名次 10 + 负分人数 2 × 10
+		t.Fatalf("两个负分玩家时一位分数不对：%d（期望 45）", delta[0])
+	}
+
+	if delta[1] != -26-5-10 { // (-1000-25000)/1000=-26，名次 +5? 不 —— 座位1 是最后一名
+		t.Fatalf("负分玩家分数不对：%d", delta[1])
+	}
+
+	// 没有负分玩家 → 一位没有额外奖励
+	state.Scores = [4]int{40000, 30000, 20000, 10000}
+
+	if got := ratingDeltas(state)[0]; got != 15+10 {
+		t.Fatalf("没有负分玩家时一位不该有奖励：%d（期望 25）", got)
+	}
+}
+
+// 有机器人的对局不算分数（rating 为空），纯人类对局才算
+func TestBotGameNoRating(t *testing.T) {
+	state := newTestState(nil)
+	state.GameID = 0
+	state.Scores = [4]int{40000, 30000, 20000, 10000}
+	state.Players = []model.Player{
+		{ID: 1, Username: "human"},
+		{ID: BotIDBase + 1, Username: "机器人1"},
+		{ID: 2, Username: "human2"},
+		{ID: 3, Username: "human3"},
+	}
+
+	client := NewHubClient(GameChannel(state.GameID), 1)
+	RegisterClient(client)
+
+	defer UnregisterClient(client)
+
+	EndGame(state)
+
+	msg := waitForMessage(t, client, "game_end")
+
+	if rating, ok := msg["rating"].(map[string]any); !ok || len(rating) != 0 {
+		t.Fatalf("有机器人的对局不该算分数：%v", msg["rating"])
+	}
+
+	// 纯人类对局：正常算出分数
+	state2 := newTestState(nil)
+	state2.Players = []model.Player{{ID: 1}, {ID: 2}, {ID: 3}, {ID: 4}}
+	state2.Scores = [4]int{40000, 30000, 20000, 10000}
+
+	if got := ratingDeltas(state2)[0]; got != 25 { // 基础 15 + 一位 10
+		t.Fatalf("纯人类对局的分数不对：%d（期望 25）", got)
+	}
+}
+
+// 双立直判定：FirstLap 说了算 —— 开局第一巡是双立直，鸣牌后/第一巡过后都是普通立直
+func TestDoubleRiichiByFirstLap(t *testing.T) {
+	state := newTestState(nil)
+	state.CurrentPlayer = 0
+	state.FirstLap = true
+
+	if got := riichiRank(state, 0); got != 2 {
+		t.Fatalf("第一巡立直应该是双立直，得到 %d", got)
+	}
+
+	// 有人鸣牌 → FirstLap 被清 → 只剩普通立直
+	state.Discards[1] = []int{12}
+	removeCalledDiscard(state, 1)
+
+	if state.FirstLap {
+		t.Fatal("被鸣牌后 FirstLap 应该变成 false")
+	}
+
+	if got := riichiRank(state, 0); got != 1 {
+		t.Fatalf("鸣牌后立直应该是普通立直，得到 %d", got)
+	}
+
+	// 四家都打过一张 → 第一巡结束 → 普通立直
+	state2 := newTestState(nil)
+	state2.FirstLap = true
+
+	for i := 0; i < 4; i++ {
+		state2.Discards[i] = []int{12}
+	}
+
+	state2.Hands[0] = []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14}
+	state2.CurrentPlayer = 0
+	state2.Hands[0] = append(state2.Hands[0], 15)
+
+	// 手动跑一次 discardTile 里的"第一巡结束"判断
+	if state2.FirstLap && totalDiscards(state2) >= state2.GameRule.Players {
+		state2.FirstLap = false
+	}
+
+	if got := riichiRank(state2, 0); got != 1 {
+		t.Fatalf("第一巡过后立直应该是普通立直，得到 %d", got)
+	}
+
+	// 九种九牌也一样：有人鸣牌后 FirstLap 变 false，不能再宣
+	state3 := newTestState(nil)
+	state3.FirstLap = true
+	state3.Discards[2] = []int{31}
+	removeCalledDiscard(state3, 2)
+
+	if state3.FirstLap {
+		t.Fatal("鸣牌后不该还处于第一巡（九种九牌/地和会误判）")
 	}
 }
 

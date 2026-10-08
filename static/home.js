@@ -722,6 +722,13 @@ function applyGameData(data, fromPoll) {
   if (data.you) applyHand(data.you);
   if (data.options) applyTurnOptions(data.options);
 
+  // 开局后把房间信息收起来，只留牌桌（想看房间就退出房间/回大厅）
+  document.getElementById('gameRoom').classList.add('hidden');
+
+  // 连"欢迎回来"那块也收掉，对局时屏幕上只有牌桌
+  const welcome = document.querySelector('.welcome');
+  if (welcome) welcome.classList.add('hidden');
+
   renderRoom();
   renderTable();
   showGameInfo(data);
@@ -957,9 +964,12 @@ function remainCount(tile) {
   return Math.max(0, 4 - seen);
 }
 
-function waitsText(waits) {
-  if (!waits || !waits.length) return '无';
-  return waits.map(w => `${labelOf(w)}(剩${remainCount(w)})`).join('、');
+// 听牌提示：用牌图显示（不再写"二筒、五筒"这种文字）
+function waitsHtml(waits) {
+  if (!waits || !waits.length) return '<span class="hint-label">无</span>';
+  return waits.map(w =>
+    `<span class="wait-item">${tileHtml(w, { mini: true })}<small>剩${remainCount(w)}</small></span>`
+  ).join('');
 }
 
 // 手牌右侧常驻显示"现在听什么"（传 text 时临时显示别的，比如悬停时的"打这张听什么"）
@@ -968,14 +978,14 @@ function renderTenpaiHint(text) {
   if (!el) return;
 
   if (text) {
-    el.textContent = text;
+    el.innerHTML = text;
     el.style.color = 'var(--gold, #d9a441)';
     return;
   }
 
   el.style.color = '';
   const waits = roomState.myWaits || [];
-  el.textContent = waits.length ? `听 ${waitsText(waits)}` : '';
+  el.innerHTML = waits.length ? `<span class="hint-label">听</span>${waitsHtml(waits)}` : '';
 }
 
 // 鼠标移到一张牌上：轮到我出牌 → 显示"打这张会听什么"；其他时候回到"现在听什么"
@@ -987,7 +997,8 @@ function onTileHover(norm) {
   const waits = tenpais[String(norm)];
 
   if (isMyTurn() && Array.isArray(waits)) {
-    renderTenpaiHint(waits.length ? `打 ${labelOf(norm)} → 听 ${waitsText(waits)}` : `打 ${labelOf(norm)} → 不听牌`);
+    renderTenpaiHint(`<span class="hint-label">打 ${escapeHtml(labelOf(norm))} →</span>` +
+      (waits.length ? waitsHtml(waits) : '<span class="hint-label">不听牌</span>'));
     return;
   }
 
@@ -1042,6 +1053,8 @@ function applyHand(you) {
   if (!you || typeof you !== 'object') return;
   roomState.hand = Array.isArray(you.hand) ? you.hand : [];
   roomState.melds = Array.isArray(you.melds) ? you.melds : [];
+  // 后端每次都会带上"这手牌听什么"（只看牌型）→ 任何阶段都能显示，不只是出牌时
+  if (Array.isArray(you.waits)) roomState.myWaits = you.waits;
   if (you.seat != null) roomState.mySeat = you.seat;
   document.getElementById('gameTable').classList.remove('hidden');
   // 服务端顺便把"你还能鸣什么"带回来了（刷新/重连后按钮不会丢）
@@ -1541,9 +1554,15 @@ function onWsMessage(msg) {
         ? msg.order
         : scores.map((_, i) => i).sort((a, b) => (scores[b] || 0) - (scores[a] || 0));
 
-      const rows = order.map((seat, i) =>
-        `<div class="result-line">${i + 1} 位　${escapeHtml(names[seat] || `座位 ${seat}`)}　${scores[seat] != null ? scores[seat] : ''}</div>`
-      ).join('');
+      // 顺位表：分数 + 这次的天梯分增减（后端在 game_end 里带 rating）
+      const rating = msg.rating || {};
+      const rows = order.map((seat, i) => {
+        const d = rating[seat];
+        const diff = d == null ? '' :
+          `<span class="money ${d >= 0 ? 'up' : 'down'}">${d > 0 ? '+' : ''}${d} 分</span>`;
+        return `<div class="result-line">${i + 1} 位　${escapeHtml(names[seat] || `座位 ${seat}`)}　` +
+          `${scores[seat] != null ? scores[seat] : ''}　${diff}</div>`;
+      }).join('');
 
       setTableLog('对局结束');
       setTableStatus('');
@@ -1589,6 +1608,8 @@ function onWsMessage(msg) {
 
         return `<div class="result-title">${sameId(w.seat, mySeat()) ? '你' : escapeHtml(nameOf(w.seat))} 和了！${gain}</div>` +
           `<div class="result-line">${w.agari ? '庄家' : '闲家'} · ${w.fu} 符 · ${yakuman ? yakuman + ' 倍役满' : han + ' 番'}${msg.honba ? ` · ${msg.honba} 本场` : ''}</div>` +
+          (msg.tile ? `<div class="result-line">${msg.tsumo ? '自摸' : '荣和'}　和了牌 ${tileHtml(msg.tile, { mini: true })}` +
+            `${msg.dora && msg.dora.length ? `　宝牌 ${msg.dora.map(v => tileHtml(v, { mini: true })).join('')}` : ''}</div>` : '') +
           `<div class="result-line">${yakuText(yaku) || '—'}</div>`;
       }).join('') +
         `<div class="result-line money-line">${payLine}</div>` +
@@ -1823,54 +1844,332 @@ async function startGame() {
 }
 
 // ============ 历史记录 ============
+// 后端：GET /api/history?page=&size=  → { games: [...] }（不带 rounds，轻量）
+//       GET /api/history/:id?full=1   → 一局详情（full 时带牌山/操作，回放用）
 async function openHistory() {
   openModal('historyModal');
+
   const list = document.getElementById('historyList');
+  if (!list) return;
+
   list.innerHTML = '<p class="empty">加载中...</p>';
 
   try {
-    const res = await fetch('/api/history');
+    const res = await fetch('/api/history?page=1&size=20');
     const data = await res.json();
+
     if (!res.ok) {
-      list.innerHTML = `<p class="empty">加载失败：${data.error || res.status}</p>`;
+      list.innerHTML = `<p class="empty">加载失败：${escapeHtml(data.error || String(res.status))}</p>`;
       return;
     }
 
-    const records = data.records || data || [];
-    if (!records.length) {
-      list.innerHTML = '<p class="empty">暂无对局记录</p>';
+    const games = data.games || [];
+
+    if (!games.length) {
+      list.innerHTML = '<p class="empty">还没有对局记录</p>';
       return;
     }
 
-    list.innerHTML = records.map(r => {
-      const rank = r.rank ?? '-';
-      const score = r.score ?? '-';
-      const time = r.started_at ? new Date(r.started_at).toLocaleString() : '-';
+    list.innerHTML = games.map(g => {
+      const started = g.started_at && !String(g.started_at).startsWith('0001')
+        ? new Date(g.started_at).toLocaleString() : '-';
+      const me = (g.seats || []).find(s => s.seat === g.my_seat) || {};
+      const delta = g.counted ? (g.my_delta > 0 ? `+${g.my_delta}` : `${g.my_delta}`) : '—';
+      const cls = g.my_delta > 0 ? 'up' : (g.my_delta < 0 ? 'down' : '');
+      // 四家做成"座位胶囊"：名次/点数/±分一眼看完
+      const seatChips = (g.seats || []).map(s => {
+        const sd = g.counted && s.delta
+          ? `<small class="money ${s.delta > 0 ? 'up' : 'down'}">${s.delta > 0 ? '+' : ''}${s.delta}</small>` : '';
+
+        return `<span class="hist-seat${s.seat === g.my_seat ? ' me' : ''}">` +
+          `<span class="seat-index">${Number(s.seat) + 1}</span>${escapeHtml(s.username)}` +
+          `<b>${s.score}</b>${sd}</span>`;
+      }).join('');
+
+      const rule = g.game_rule && g.game_rule.rounds >= 8 ? '半庄' : '东风战';
+
       return `
-        <div class="history-item" onclick="loadHistoryDetail(${r.game_record_id || r.id})">
-          <div class="row1">
-            <span>顺位：<span class="rank r${rank}">${rank} 位</span></span>
-            <span>分数：${score}</span>
+        <div class="history-item" onclick="loadHistoryDetail('${g.game_id}')">
+          <div class="hist-head">
+            <span class="rank-badge r${g.my_rank || ''}">${g.finished ? `${g.my_rank || '-'} 位` : '未完成'}</span>
+            <span class="hist-time">${rule}　${started}</span>
+            <span class="money ${cls}">${delta}${g.counted ? ' 分' : '（人机局不计分）'}</span>
           </div>
-          <div class="row2">${time}</div>
-        </div>
-      `;
+          <div class="hist-seats">${seatChips}</div>
+        </div>`;
     }).join('');
   } catch (err) {
     list.innerHTML = `<p class="empty">请求异常：${err.message}</p>`;
   }
 }
 
+// 一局详情：四家顺位 + 每局结果（复用结果面板的样式，不新增弹窗）
 async function loadHistoryDetail(gameId) {
-  if (!gameId) return;
+  const list = document.getElementById('historyList');
+  if (!list || !gameId) return;
+
+  list.innerHTML = '<p class="empty">加载中...</p>';
+
   try {
     const res = await fetch(`/api/history/${gameId}`);
-    const data = await res.json();
-    if (!res.ok) return alert('加载详情失败');
-    // 详情暂时用 alert 展示，后续可换成新弹窗
-    alert(JSON.stringify(data, null, 2));
+    const g = await res.json();
+
+    if (!res.ok) {
+      list.innerHTML = `<p class="empty">加载失败：${escapeHtml(g.error || String(res.status))}</p>`;
+      return;
+    }
+
+    const seats = (g.seats || []).slice().sort((a, b) => (a.rank || 9) - (b.rank || 9));
+
+    const rows = seats.map(s => {
+      const delta = g.counted ? (s.delta > 0 ? `+${s.delta}` : `${s.delta}`) : '—';
+      const cls = s.delta > 0 ? 'up' : (s.delta < 0 ? 'down' : '');
+
+      return `<div class="result-line">${s.rank || '-'} 位　${escapeHtml(s.username)}` +
+        `${s.seat === g.my_seat ? '（你）' : ''}　${s.score} 点　` +
+        `<span class="money ${cls}">${delta}${g.counted ? ' 分' : ''}</span></div>`;
+    }).join('');
+
+    const rounds = (g.rounds || []).map((r, i) => {
+      const outcome = (r.results || []).map(x => {
+        if (x.action === 'hu') {
+          const winners = (x.detail && x.detail.winners) || [];
+          return winners.length ? `和了：${winners.map(w => Number(w.seat) + 1).join('、')}` : '和了';
+        }
+
+        const reason = (x.detail && x.detail.reason) || '';
+        return `流局${reason ? `（${reason}）` : ''}`;
+      }).join('、');
+
+      return `<div class="result-line">${roundName(r.round_index)}　庄 ${Number(r.dealer) + 1}　` +
+        `${r.keep_dealer ? '连庄' : '轮庄'}　${escapeHtml(outcome || '-')}　${r.action_count || 0} 手　` +
+        `<button class="btn" onclick="startReplay('${g.game_id}', ${i})">▶ 回放</button></div>`;
+    }).join('');
+
+    list.innerHTML =
+      `<div class="history-item" onclick="openHistory()"><div class="row2">← 返回列表</div></div>` +
+      `<div class="result-title">${g.finished ? '已完成' : '未完成（中途解散）'}` +
+      `${g.counted ? '' : ' · 人机局不计分'}</div>` +
+      rows +
+      `<div class="result-title">各局</div>` +
+      (rounds || '<div class="result-line">-</div>');
   } catch (err) {
-    alert('请求异常：' + err.message);
+    list.innerHTML = `<p class="empty">请求异常：${err.message}</p>`;
+  }
+}
+
+// ---------- 回放：用存下来的牌山 + 操作把整局重走一遍 ----------
+//
+// 起手牌完全由牌山决定（庄家起手 3 轮×4 张，再每人 1 张，和 StartRound 一致），
+// 所以不需要额外存手牌，就能精确还原；牌河更是逐手累积出来的。
+// 会稍有偏差的只有"吃/杠拿了哪两张"（操作日志只记了牌值），不影响牌河和摸打顺序。
+
+let replay = null;
+
+function replaySeatName(game, seat) {
+  const s = (game.seats || []).find(x => Number(x.seat) === Number(seat));
+  return s ? s.username : `座位 ${seat}`;
+}
+
+// 从牌山排出四家起手牌
+function replayDeal(wall, dealer, players) {
+  const hands = [];
+
+  for (let i = 0; i < players; i++) hands.push([]);
+
+  let p = 0;
+
+  for (let round = 0; round < 3; round++) {
+    for (let k = 0; k < players; k++) {
+      const seat = (dealer + k) % players;
+      for (let j = 0; j < 4; j++) hands[seat].push(wall[p++]);
+    }
+  }
+
+  for (let k = 0; k < players; k++) {
+    hands[(dealer + k) % players].push(wall[p++]);
+  }
+
+  return { hands, forward: p };
+}
+
+// 走到第 step 手为止
+function replayTo(game, roundIdx, step) {
+  const r = game.rounds[roundIdx] || {};
+  const acts = r.actions || [];
+  const players = Math.max(2, (game.seats || []).length || 4);
+  const wall = r.wall || [];
+  const st = replayDeal(wall, Number(r.dealer) || 0, players);
+
+  const rivers = [];
+  const riichi = [];
+
+  for (let i = 0; i < players; i++) {
+    rivers.push([]);
+    riichi.push(0);
+  }
+
+  let back = r.backward != null ? Number(r.backward) : wall.length - 1;
+  const texts = [];
+  const n = Math.max(0, Math.min(step, acts.length));
+
+  const takeFromHand = (seat, tile, count) => {
+    for (let k = 0; k < count; k++) {
+      const idx = st.hands[seat].findIndex(v => normValue(v) === normValue(tile));
+      if (idx < 0) break;
+      st.hands[seat].splice(idx, 1);
+    }
+  };
+
+  for (let i = 0; i < n; i++) {
+    const a = acts[i];
+    const seat = Number(a.seat);
+    const tile = Number(a.tile) || 0;
+    const who = replaySeatName(game, seat);
+
+    if (a.action === 'draw') {
+      if (st.forward < wall.length) st.hands[seat].push(wall[st.forward++]);
+      texts.push(`第 ${i + 1} 手：${who} 摸牌`);
+    } else if (a.action === 'discard' || a.action === 'riichi') {
+      takeFromHand(seat, tile, 1);
+      rivers[seat].push(tile);
+      if (a.action === 'riichi') riichi[seat] = 1;
+      texts.push(`第 ${i + 1} 手：${who} ${a.action === 'riichi' ? '立直宣言 ' : '打出 '}${labelOf(tile)}`);
+    } else if (a.action === 'kan') {
+      takeFromHand(seat, tile, 4);
+      texts.push(`第 ${i + 1} 手：${who} 杠 ${labelOf(tile)}`);
+    } else if (a.action === 'rinshan') {
+      if (back > st.forward) st.hands[seat].push(wall[back--]);
+      texts.push(`第 ${i + 1} 手：${who} 摸岭上牌`);
+    } else if (a.action === 'pon' || a.action === 'chi') {
+      takeFromHand(seat, tile, 2);
+      const from = Number(a.from) || 0;
+      const ridx = rivers[from].findIndex(v => normValue(v) === normValue(tile));
+      if (ridx >= 0) rivers[from].splice(ridx, 1); // 被鸣走的牌从牌河拿走
+      texts.push(`第 ${i + 1} 手：${who} ${a.action === 'pon' ? '碰' : '吃'} ${labelOf(tile)}`);
+    } else if (a.action === 'hu' || a.action === 'ryuukyoku') {
+      texts.push(`第 ${i + 1} 手：${a.action === 'hu' ? '和了' : '流局'}`);
+    }
+  }
+
+  // 手牌按牌面值排序（和实战牌桌一致；同牌面时赤5 排前面）
+  for (let i = 0; i < players; i++) {
+    st.hands[i].sort((a, b) => (normValue(a) - normValue(b)) || (Math.abs(b) - Math.abs(a)));
+  }
+
+  return { hands: st.hands, rivers, riichi, texts, rest: Math.max(0, 122 - st.forward) };
+}
+
+function renderReplay() {
+  const box = document.getElementById('historyList');
+  if (!box || !replay) return;
+
+  const game = replay.game;
+  const r = game.rounds[replay.round] || {};
+  const acts = (r.actions || []).length;
+  const st = replayTo(game, replay.round, replay.step);
+  const winds = ['东', '南', '西', '北'];
+
+  const seatBox = (seat, cls) => {
+    const hand = st.hands[seat].map(v => tileHtml(v, { mini: true })).join('');
+    const river = st.rivers[seat].map(v => tileHtml(v, { mini: true })).join('');
+
+    return `<div class="seat-box ${cls}">
+        <div class="seat-name"><span class="wind">${winds[seat] || ''}</span>` +
+      `<span>${escapeHtml(replaySeatName(game, seat))}</span>` +
+      `${st.riichi[seat] ? '<span class="riichi-tag">立直</span>' : ''}</div>` +
+      `<div class="tile-row hand">${hand || '<span class="table-hint">—</span>'}</div>` +
+      `<div class="seat-discards">${river}</div>
+      </div>`;
+  };
+
+  box.innerHTML =
+    `<div class="result-title">回放 · ${roundName(r.round_index)}　第 ${replay.step} / ${acts} 手　牌山剩 ${st.rest}</div>` +
+    `<div class="table-log">${escapeHtml(st.texts[st.texts.length - 1] || '开局（未出牌）')}</div>` +
+    `<div class="table-actions">
+       <button class="btn" onclick="replayPrev()">◀ 上一手</button>
+       <button class="btn primary" onclick="replayNext()">下一手 ▶</button>
+       <button class="btn" onclick="replayRestart()">⏮ 从头</button>
+       <button class="btn" onclick="loadHistoryDetail('${game.game_id}')">← 返回详情</button>
+     </div>` +
+    seatBox(0, '') + seatBox(1, '') + seatBox(2, '') + seatBox(3, '') +
+    (acts > 0 && replay.step >= acts ? replayResultHtml(game, r) : '');
+}
+
+// 回放到最后一手时，把和牌的完整信息摆出来（和牌牌 / 符番 / 役种 / 点数 / 宝牌）
+function replayResultHtml(game, r) {
+  const reasonText = {
+    exhausted: '荒牌平局', nagashi_mangan: '流局满贯', kyuushu_kyuuhai: '九种九牌',
+    four_riichi: '四家立直', four_wind: '四风连打', four_kan: '四杠散了',
+  };
+
+  return (r.results || []).map(x => {
+    const detail = x.detail || {};
+
+    if (x.action !== 'hu') {
+      return `<div class="result-title">流局 · ${escapeHtml(reasonText[detail.reason] || detail.reason || '')}</div>`;
+    }
+
+    const tile = Number(detail.tile || x.tile || 0);
+    const winners = detail.winners || [];
+
+    return winners.map(w => {
+      const yaku = w.yaku || {};
+      const yakuman = yaku.yakuman || 0;
+      const han = Object.keys(yaku).filter(k => k !== 'yakuman').reduce((n, k) => n + (yaku[k] || 0), 0);
+
+      return `<div class="result-title">${escapeHtml(replaySeatName(game, w.seat))} 和了！` +
+        `${w.points ? `+${w.points}` : ''}</div>` +
+        `<div class="result-line">${w.agari ? '庄家' : '闲家'}　${w.fu} 符 · ` +
+        `${yakuman ? `${yakuman} 倍役满` : `${han} 番`}${w.limit ? `（${w.limit}）` : ''}` +
+        `${detail.tsumo ? '　自摸' : '　荣和'}` +
+        `${tile ? `　和了牌 ${tileHtml(tile, { mini: true })}` : ''}</div>` +
+        `<div class="result-line">${yakuText(yaku) || '—'}</div>`;
+    }).join('');
+  }).join('');
+}
+
+function replayNext() {
+  const acts = ((replay.game.rounds[replay.round] || {}).actions || []).length;
+  replay.step = Math.min(replay.step + 1, acts);
+  renderReplay();
+}
+
+function replayPrev() {
+  replay.step = Math.max(0, replay.step - 1);
+  renderReplay();
+}
+
+function replayRestart() {
+  replay.step = 0;
+  renderReplay();
+}
+
+// 拉这一局的完整数据（full=1：带牌山和每一手操作），然后开回放
+async function startReplay(gameId, roundIdx) {
+  const list = document.getElementById('historyList');
+  if (!list) return;
+
+  list.innerHTML = '<p class="empty">加载回放数据...</p>';
+
+  try {
+    const res = await fetch(`/api/history/${gameId}?full=1`);
+    const g = await res.json();
+
+    if (!res.ok) {
+      list.innerHTML = `<p class="empty">加载失败：${escapeHtml(g.error || String(res.status))}</p>`;
+      return;
+    }
+
+    if (!g.rounds || !g.rounds.length) {
+      list.innerHTML = '<p class="empty">这一局没有回放数据</p>';
+      return;
+    }
+
+    replay = { game: g, round: roundIdx || 0, step: 0 };
+    renderReplay();
+  } catch (err) {
+    list.innerHTML = `<p class="empty">回放数据加载失败：${err.message}</p>`;
   }
 }
 

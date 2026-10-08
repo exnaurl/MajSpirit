@@ -622,8 +622,11 @@ func declareRiichi(state *model.RoundState, seat, tile int) error {
 }
 
 // riichiRank 1 = 立直；2 = 双立直（自己还没打过牌，场上也没有副露）
+// riichiRank 立直 / 双立直。
+// 双立直 = 第一巡（无人鸣牌）时立直 —— 正好就是 FirstLap：
+// 它开局为 true，有人鸣牌会被清掉，四家都打过一张也会被清掉。
 func riichiRank(state *model.RoundState, seat int) int {
-	if len(state.Discards[seat]) == 0 && !anyMeld(state) {
+	if state.FirstLap {
 		return 2
 	}
 
@@ -1592,6 +1595,9 @@ func removeCalledDiscard(state *model.RoundState, from int) {
 		state.Called[from] = true
 	}
 
+	// 有人鸣牌 → 第一巡就此打断：天和/地和/九种九牌/双立直 都不再成立
+	state.FirstLap = false
+
 	d := state.Discards[from]
 
 	if len(d) == 0 {
@@ -1632,11 +1638,117 @@ func encodeRoundIndex(wind, hand, honba int) string {
 	return fmt.Sprintf("%d%d%d", wind, hand, honba)
 }
 
+// handWaits 这手牌听哪些牌（只看牌型不看役 —— 任何阶段都能显示听牌提示）
+func handWaits(state *model.RoundState, seat int) []int {
+	if state == nil || seat < 0 || seat >= state.GameRule.Players {
+		return nil
+	}
+
+	concealed, melds := SplitMeld(state.Hands[seat])
+
+	// 去掉刚摸到的那张，留下的必须是 13 张形状
+	if drawn := drawnTile(state, seat); drawn != 0 {
+		concealed = removeTiles(concealed, drawn, 1)
+	}
+
+	if len(concealed)+3*len(melds) != 13 {
+		return nil
+	}
+
+	out := make([]int, 0, 8)
+
+	for t := 1; t < 38; t++ {
+		if t%10 == 0 {
+			continue // 赤5 不单独当待牌
+		}
+
+		if winningShape(append(append([]int(nil), concealed...), t), len(melds) == 0) {
+			out = append(out, t)
+		}
+	}
+
+	return out
+}
+
+// winningShape 只看牌型：一般形（面子+雀头），或（门清时）七对子/国士无双
+func winningShape(tiles []int, allowSpecial bool) bool {
+	if len(DecomposeHand(tiles)) > 0 {
+		return true
+	}
+
+	if !allowSpecial || len(tiles) != 14 {
+		return false
+	}
+
+	seen := map[int]int{}
+	kokushi := true
+
+	for _, v := range tiles {
+		seen[normTile(v)]++
+
+		if !isYaochuTile(normTile(v)) {
+			kokushi = false
+		}
+	}
+
+	pairs, singles := 0, 0
+
+	for _, c := range seen {
+		switch c {
+		case 1:
+			singles++
+		case 2:
+			pairs++
+		default:
+			return false
+		}
+	}
+
+	if pairs == 7 {
+		return true // 七对子
+	}
+
+	return kokushi && pairs == 1 && singles == 12 // 国士无双
+}
+
+// dealerLeads 庄家是不是单独领先（点数严格高于其他所有人）
+func dealerLeads(state *model.RoundState) bool {
+	n := state.GameRule.Players
+	if n <= 0 {
+		n = 4
+	}
+
+	for i := 0; i < n; i++ {
+		if i != state.Dealer && state.Scores[i] >= state.Scores[state.Dealer] {
+			return false
+		}
+	}
+
+	return true
+}
+
+// isLastHand 现在是不是最后一局（打满 GameRule.Rounds 的那一局）
+func isLastHand(state *model.RoundState) bool {
+	wind, hand, _ := decodeRoundIndex(state.RoundIndex)
+
+	total := state.GameRule.Rounds
+	if total <= 0 {
+		total = 8
+	}
+
+	return (wind-1)*4+hand+1 == total
+}
+
 // nextRoundIndex 算出下一局的 round_index 以及是否终局（这个局打完就结束了）
 func nextRoundIndex(state *model.RoundState, keepDealer bool) (string, bool) {
 	wind, hand, honba := decodeRoundIndex(state.RoundIndex)
 
-	if keepDealer { // 连庄：只加本场，永远不会因为局数结束
+	if keepDealer { // 连庄：只加本场，一般不会因为局数结束
+		// 但オーラス（最后一局）庄家单独领先时，连庄也直接终局 —— 雀魂的"亲トップのアガリ止め"
+		if isLastHand(state) && dealerLeads(state) {
+			return encodeRoundIndex(wind, hand, honba+1), true
+		}
+
 		return encodeRoundIndex(wind, hand, honba+1), false
 	}
 
@@ -1714,8 +1826,141 @@ func NextRound(state *model.RoundState, keepDealer bool) {
 	}
 }
 
-// EndGame 终局：按点数排名次，写结束时间/scores/ranks，并广播顺位
+// ============================================================
+// 分数（天梯分 Point）：一局游戏结束后结算，累加到 users.point
+//
+//	基础分 = (点数 - 25000) / 1000
+//	名次分 = 1位 +10、2位 +5、3位 -5、4位 -10
+//	结束时点数为负的玩家 额外 -10
+//	每有一个负分玩家，1位 额外 +10
+// ============================================================
+
+// RatingFromScores 从"最终点数 + 玩家ID"重算天梯分增减（历史记录用，不用把分数存库）。
+// 返回 (座位 → 分数增减, 这一局是否计入分数)。有机器人就不计分。
+func RatingFromScores(scores []int, playerIDs []uint) (map[int]int, bool) {
+	n := len(scores)
+	if n == 0 {
+		return map[int]int{}, false
+	}
+
+	for _, id := range playerIDs {
+		if IsBotPlayerID(id) {
+			return map[int]int{}, false
+		}
+	}
+
+	// 名次：点数高的在前（同分按座位号，和 rankSeats 一致）
+	order := make([]int, 0, n)
+	used := make([]bool, n)
+
+	for len(order) < n {
+		best := -1
+
+		for seat := 0; seat < n; seat++ {
+			if used[seat] {
+				continue
+			}
+
+			if best < 0 || scores[seat] > scores[best] {
+				best = seat
+			}
+		}
+
+		if best < 0 {
+			break
+		}
+
+		used[best] = true
+		order = append(order, best)
+	}
+
+	rankBonus := []int{10, 5, -5, -10}
+	negatives := 0
+
+	for _, seat := range order {
+		if scores[seat] < 0 {
+			negatives++
+		}
+	}
+
+	delta := make(map[int]int, n)
+
+	for i, seat := range order {
+		d := (scores[seat] - 25000) / 1000 // 整数除法（不足 1000 的小数抹掉）
+
+		if i < len(rankBonus) {
+			d += rankBonus[i]
+		}
+
+		if scores[seat] < 0 {
+			d -= 10
+		}
+
+		if i == 0 {
+			d += 10 * negatives // 一个负分玩家 → 第一名多 +10
+		}
+
+		delta[seat] = d
+	}
+
+	return delta, true
+}
+
+// ratingDeltas 每个座位的分数增减（现局用）
+func ratingDeltas(state *model.RoundState) map[int]int {
+	n := len(state.Players)
+	if n > len(state.Scores) {
+		n = len(state.Scores)
+	}
+
+	ids := make([]uint, 0, len(state.Players))
+
+	for _, p := range state.Players {
+		ids = append(ids, p.ID)
+	}
+
+	delta, _ := RatingFromScores(state.Scores[:n], ids)
+	return delta
+}
+
+// saveRating 把分数写进 users.point（机器人不在 users 表里，跳过）
+func saveRating(state *model.RoundState, delta map[int]int) {
+	if storage.DB == nil {
+		return
+	}
+
+	for seat, d := range delta {
+		if seat < 0 || seat >= len(state.Players) {
+			continue
+		}
+
+		player := state.Players[seat]
+
+		if IsBotPlayerID(player.ID) {
+			continue
+		}
+
+		var user model.User
+
+		if err := storage.DB.First(&user, player.ID).Error; err != nil {
+			log.Printf("分数：读用户 %d 失败：%v", player.ID, err)
+			continue
+		}
+
+		user.Point += d
+
+		if err := storage.DB.Save(&user).Error; err != nil {
+			log.Printf("分数：写用户 %d 失败：%v", player.ID, err)
+		}
+	}
+}
+
+// EndGame 终局：结算分数（Point）→ 按点数排名次 → 写结束时间/scores/ranks → 广播顺位
 func EndGame(state *model.RoundState) {
+	if state.Action == "end" {
+		return // 已经结算过了，别重复加分
+	}
+
 	state.Action = "end"
 	ensureScores(state)
 
@@ -1726,6 +1971,24 @@ func EndGame(state *model.RoundState) {
 		if seat >= 0 && seat < len(state.Players) {
 			ranks = append(ranks, state.Players[seat].ID)
 		}
+	}
+
+	// 天梯分：有机器人的对局不计分，避免刷分
+	hasBot := false
+
+	for _, p := range state.Players {
+		if IsBotPlayerID(p.ID) {
+			hasBot = true
+		}
+	}
+
+	rating := map[int]int{}
+
+	if hasBot {
+		log.Printf("分数：本局有机器人，跳过结算（game=%d）", state.GameID)
+	} else {
+		rating = ratingDeltas(state)
+		saveRating(state, rating)
 	}
 
 	rankJSON, _ := json.Marshal(ranks)
@@ -1748,6 +2011,7 @@ func EndGame(state *model.RoundState) {
 		"order":  order,
 		"ranks":  ranks,
 		"names":  playerNames(state),
+		"rating": rating, // 每个座位这次加/减多少分
 	})
 }
 

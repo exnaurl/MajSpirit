@@ -101,6 +101,10 @@ func main() {
 	e.POST("/api/room/leave", handler.LeaveRoomHandler, handler.JWTAPIMiddleware)
 	e.POST("/api/game/start", handler.StartGameHandler, handler.JWTAPIMiddleware)
 	e.GET("/api/game/:id", handler.GetGameHandler, handler.JWTAPIMiddleware)
+
+	// 历史记录（只读 games 表：rounds 里已经存了牌山/操作/结果）
+	e.GET("/api/history", handler.GetHistoryHandler, handler.JWTAPIMiddleware)
+	e.GET("/api/history/:id", handler.GetHistoryDetailHandler, handler.JWTAPIMiddleware)
 	e.GET("/ws/room/:id", handler.RoomWSHandler, handler.JWTAPIMiddleware)
 	e.GET("/ws/game/:id", handler.GameWSHandler, handler.JWTAPIMiddleware)
 

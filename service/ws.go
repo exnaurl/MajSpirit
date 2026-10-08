@@ -448,13 +448,13 @@ func BroadcastGameResults(state *model.RoundState, tile int, winners []WinResult
 
 	BroadcastRoom(GameChannel(state.GameID), msg)
 
-	// 一局结束：结果 + 是否连庄落库
+	// 一局结束：结果 + 是否连庄落库（把和牌的那张也存进去，回放要用）
 	if len(winners) > 0 {
 		saveRoundResult(state, model.Action{
 			Action: "hu",
 			Seat:   winners[0].Seat,
 			Tile:   tile,
-			Detail: map[string]any{"tsumo": tsumo, "winners": winners},
+			Detail: map[string]any{"tsumo": tsumo, "winners": winners, "tile": tile},
 		})
 	}
 }
@@ -529,6 +529,8 @@ func HandView(state *model.RoundState, seat int) map[string]any {
 		"hand":  concealed,
 		"melds": melds,
 		"drawn": drawn,
+		// 听牌（只看牌型）：任何阶段都能显示听牌提示，不只是轮到自己出牌时
+		"waits": handWaits(state, seat),
 	}
 
 	// 鸣牌窗口还开着且轮到我回复 → 一起带上：
